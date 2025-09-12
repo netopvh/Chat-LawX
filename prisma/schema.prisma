@@ -60,13 +60,14 @@ model LegalPrompt {
   jurisdiction String
   name        String
   description String?
-  content     String
+  content     String   @db.Text
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
   conversations Conversation[]
   
+  @@unique([jurisdiction, name])
   @@map("legal_prompts")
 }
 
@@ -86,4 +87,111 @@ model Conversation {
   prompt LegalPrompt @relation(fields: [promptId], references: [id])
   
   @@map("conversations")
+}
+
+model Plan {
+  id                    String   @id @default(cuid())
+  name                  String
+  description           String
+  monthlyPrice          Float
+  yearlyPrice           Float
+  consultationLimit     Int?     // Limite de consultas jurídicas (apenas para PT/ES)
+  documentAnalysisLimit Int?     // Limite de análises de documentos
+  messageLimit          Int?     // Limite de mensagens (apenas para PT/ES)
+  isUnlimited           Boolean  @default(false)
+  isActive              Boolean  @default(true)
+  jurisdiction          String   // BR, PT, ES
+  ddi                   String   // 55, 351, 34
+  stripePriceIdMonthly  String?
+  stripePriceIdYearly   String?
+  stripeProductId       String?
+  features              Json     // Array de funcionalidades incluídas
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  
+  subscriptions         Subscription[]
+  
+  @@unique([name, jurisdiction])
+  @@map("plans")
+}
+
+model Subscription {
+  id                    String   @id @default(cuid())
+  userId                String
+  planId                String
+  status                String   // active, cancelled, expired, past_due, unpaid
+  billingCycle          String   // monthly, yearly
+  currentPeriodStart    DateTime
+  currentPeriodEnd      DateTime
+  cancelledAt           DateTime?
+  stripeSubscriptionId  String?
+  stripeCustomerId      String?
+  lastSyncAt            DateTime?
+  syncStatus            String   @default("pending") // synced, pending, error
+  stripeWebhookEvents   Json?    // Array de eventos recebidos
+  jurisdiction          String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  
+  plan                  Plan     @relation(fields: [planId], references: [id])
+  usageTracking         UsageTracking[]
+  
+  @@map("subscriptions")
+}
+
+model UpgradeSession {
+  id                        String   @id @default(cuid())
+  userId                    String
+  phone                     String
+  planName                  String
+  billingCycle              String   // monthly, yearly
+  amount                    Float
+  status                    String   // active, completed, expired, failed, cancelled, payment_processing, payment_confirmed, payment_failed
+  currentStep               String   // plan_selection, frequency_selection, payment_info, payment_processing, confirmation, expired
+  attemptsCount             Int      @default(0)
+  lastAttemptAt             DateTime?
+  jurisdiction              String?  // BR, PT, ES
+  stripeCheckoutUrl         String?
+  stripeCheckoutSessionId   String?
+  completedAt               DateTime?
+  paymentConfirmedAt        DateTime?
+  paymentFailedAt           DateTime?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+  expiresAt                 DateTime
+  
+  upgradeAttempts           UpgradeAttempt[]
+  
+  @@map("upgrade_sessions")
+}
+
+model UpgradeAttempt {
+  id            String   @id @default(cuid())
+  sessionId     String
+  step          String
+  success       Boolean
+  errorMessage  String?
+  createdAt     DateTime @default(now())
+  
+  session       UpgradeSession @relation(fields: [sessionId], references: [id])
+  
+  @@map("upgrade_attempts")
+}
+
+model UsageTracking {
+  id                      String   @id @default(cuid())
+  userId                  String
+  subscriptionId          String
+  periodStart             DateTime
+  periodEnd               DateTime
+  consultationsCount      Int      @default(0)
+  documentAnalysisCount   Int      @default(0)
+  messagesCount           Int      @default(0)
+  jurisdiction            String
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  
+  subscription            Subscription @relation(fields: [subscriptionId], references: [id])
+  
+  @@map("usage_tracking")
 }

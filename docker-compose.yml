@@ -1,15 +1,13 @@
-version: '3.8'
-
 services:
   mysql:
     image: mysql:8.0
     container_name: chat_lawx_mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: password
+      MYSQL_ROOT_PASSWORD: fn1d2f13r0
       MYSQL_DATABASE: chat_lawx
       MYSQL_USER: chat_lawx_user
-      MYSQL_PASSWORD: chat_lawx_password
+      MYSQL_PASSWORD: fn1d2f13r0
     ports:
       - "3306:3306"
     volumes:
@@ -45,7 +43,7 @@ services:
       PMA_HOST: mysql
       PMA_PORT: 3306
       PMA_USER: root
-      PMA_PASSWORD: password
+      PMA_PASSWORD: fn1d2f13r0
     ports:
       - "8080:80"
     depends_on:

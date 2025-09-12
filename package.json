@@ -28,6 +28,9 @@
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f"
   },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  },
   "dependencies": {
     "@google/generative-ai": "^0.2.1",
     "@nestjs/common": "^10.0.0",

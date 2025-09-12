@@ -1,341 +1,346 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   LegalPrompt,
-  LegalPromptType,
-  PromptVariable,
-  PromptExecution,
-  PromptTemplate,
-  LegalPromptConfig,
-  CreatePromptDto,
-  UpdatePromptDto,
-  ExecutePromptDto,
-  PromptSearchOptions,
+  CreateLegalPromptDto,
+  UpdateLegalPromptDto,
+  LegalPromptQueryOptions,
+  Conversation,
+  CreateConversationDto,
+  UpdateConversationDto,
+  ConversationMessage,
+  OpenAIRequest,
+  OpenAIResponse,
 } from './interfaces/legal-prompt.interface';
 
 @Injectable()
 export class LegalPromptsService {
   private readonly logger = new Logger(LegalPromptsService.name);
-  private readonly config: LegalPromptConfig;
-  private readonly prompts: Map<string, LegalPrompt> = new Map();
-  private readonly templates: Map<string, PromptTemplate> = new Map();
 
-  constructor(private configService: ConfigService) {
-    this.config = {
-      defaultJurisdiction: this.configService.get<string>('DEFAULT_JURISDICTION') || 'BR',
-      supportedJurisdictions: this.configService.get<string>('SUPPORTED_JURISDICTIONS')?.split(',') || ['BR', 'PT', 'ES'],
-      maxPromptLength: 10000,
-      maxVariables: 20,
-      cacheEnabled: true,
-      versioningEnabled: true,
-    };
-
-    this.initializeDefaultPrompts();
-  }
+  constructor(private prismaService: PrismaService) {}
 
   /**
-   * Inicializa prompts padrão para cada jurisdição
+   * Cria um novo prompt legal
    */
-  private initializeDefaultPrompts(): void {
-    this.initializeBrazilianPrompts();
-    this.initializePortuguesePrompts();
-    this.initializeSpanishPrompts();
-    this.logger.log(`Inicializados ${this.prompts.size} prompts jurídicos`);
-  }
+  async createPrompt(createDto: CreateLegalPromptDto): Promise<LegalPrompt> {
+    try {
+      const prompt = await this.prismaService.legalPrompt.create({
+        data: {
+          jurisdiction: createDto.jurisdiction,
+          name: createDto.name,
+          description: createDto.description,
+          content: createDto.content,
+          isActive: createDto.isActive ?? true,
+        },
+      });
 
-  /**
-   * Prompts específicos para o Brasil
-   */
-  private initializeBrazilianPrompts(): void {
-    const brazilianPrompts: CreatePromptDto[] = [
-      {
-        type: 'contract_analysis',
-        jurisdiction: 'BR',
-        title: 'Análise de Contrato - Brasil',
-        description: 'Analisa contratos segundo a legislação brasileira',
-        prompt: `Você é um advogado especialista em direito contratual brasileiro. Analise o seguinte contrato considerando:
-
-1. **Legislação Aplicável**: Código Civil Brasileiro (Lei 10.406/2002)
-2. **Princípios**: Autonomia da vontade, boa-fé objetiva, função social do contrato
-3. **Cláusulas Obrigatórias**: Verificar presença de cláusulas essenciais
-4. **Riscos Jurídicos**: Identificar possíveis problemas legais
-5. **Sugestões**: Propor melhorias e cláusulas adicionais
-
-**Contrato a ser analisado:**
-{contract_content}
-
-**Análise solicitada:**
-{analysis_type}
-
-Forneça uma análise detalhada e estruturada.`,
-        variables: [
-          { name: 'contract_content', type: 'string', required: true, description: 'Conteúdo do contrato a ser analisado' },
-          { name: 'analysis_type', type: 'string', required: false, description: 'Tipo de análise solicitada', defaultValue: 'análise completa' }
-        ]
-      },
-      {
-        type: 'petition_drafting',
-        jurisdiction: 'BR',
-        title: 'Elaboração de Petição - Brasil',
-        description: 'Elabora petições iniciais segundo o CPC brasileiro',
-        prompt: `Você é um advogado especialista em direito processual civil brasileiro. Elabora a seguinte petição considerando:
-
-1. **Legislação**: CPC (Lei 13.105/2015)
-2. **Estrutura**: Requisitos do art. 319 do CPC
-3. **Fundamentos**: Jurisprudência do STJ e STF
-4. **Pedidos**: Claro, preciso e fundamentado
-
-**Dados do caso:**
-- **Partes**: {parties}
-- **Fatos**: {facts}
-- **Direito**: {legal_basis}
-- **Pedidos**: {requests}
-
-Elabore uma petição inicial completa e bem fundamentada.`,
-        variables: [
-          { name: 'parties', type: 'string', required: true, description: 'Identificação das partes (autor e réu)' },
-          { name: 'facts', type: 'string', required: true, description: 'Fatos relevantes do caso' },
-          { name: 'legal_basis', type: 'string', required: true, description: 'Fundamentos jurídicos' },
-          { name: 'requests', type: 'string', required: true, description: 'Pedidos formulados' }
-        ]
-      }
-    ];
-
-    brazilianPrompts.forEach(prompt => this.createPrompt(prompt));
-  }
-
-  /**
-   * Prompts específicos para Portugal
-   */
-  private initializePortuguesePrompts(): void {
-    const portuguesePrompts: CreatePromptDto[] = [
-      {
-        type: 'contract_analysis',
-        jurisdiction: 'PT',
-        title: 'Análise de Contrato - Portugal',
-        description: 'Analisa contratos segundo a legislação portuguesa',
-        prompt: `Você é um advogado especialista em direito contratual português. Analise o seguinte contrato considerando:
-
-1. **Legislação Aplicável**: Código Civil Português
-2. **Princípios**: Autonomia da vontade, boa-fé, função social
-3. **Cláusulas Obrigatórias**: Verificar conformidade legal
-4. **Riscos Jurídicos**: Identificar problemas potenciais
-5. **Sugestões**: Propor melhorias
-
-**Contrato a ser analisado:**
-{contract_content}
-
-**Análise solicitada:**
-{analysis_type}
-
-Forneça uma análise detalhada e estruturada.`,
-        variables: [
-          { name: 'contract_content', type: 'string', required: true, description: 'Conteúdo do contrato a ser analisado' },
-          { name: 'analysis_type', type: 'string', required: false, description: 'Tipo de análise solicitada', defaultValue: 'análise completa' }
-        ]
-      }
-    ];
-
-    portuguesePrompts.forEach(prompt => this.createPrompt(prompt));
-  }
-
-  /**
-   * Prompts específicos para Espanha
-   */
-  private initializeSpanishPrompts(): void {
-    const spanishPrompts: CreatePromptDto[] = [
-      {
-        type: 'contract_analysis',
-        jurisdiction: 'ES',
-        title: 'Análisis de Contrato - España',
-        description: 'Analiza contratos según la legislación española',
-        prompt: `Eres un abogado especialista en derecho contractual español. Analiza el siguiente contrato considerando:
-
-1. **Legislación Aplicable**: Código Civil Español
-2. **Principios**: Autonomía de la voluntad, buena fe, función social
-3. **Cláusulas Obligatorias**: Verificar conformidad legal
-4. **Riesgos Jurídicos**: Identificar problemas potenciales
-5. **Sugerencias**: Proponer mejoras
-
-**Contrato a analizar:**
-{contract_content}
-
-**Tipo de análisis solicitado:**
-{analysis_type}
-
-Proporciona un análisis detallado y estructurado.`,
-        variables: [
-          { name: 'contract_content', type: 'string', required: true, description: 'Contenido del contrato a analizar' },
-          { name: 'analysis_type', type: 'string', required: false, description: 'Tipo de análisis solicitado', defaultValue: 'análisis completo' }
-        ]
-      }
-    ];
-
-    spanishPrompts.forEach(prompt => this.createPrompt(prompt));
-  }
-
-  /**
-   * Cria um novo prompt
-   */
-  createPrompt(createData: CreatePromptDto): LegalPrompt {
-    const id = this.generatePromptId(createData.type, createData.jurisdiction);
-    
-    const prompt: LegalPrompt = {
-      id,
-      type: createData.type,
-      jurisdiction: createData.jurisdiction,
-      title: createData.title,
-      description: createData.description,
-      prompt: createData.prompt,
-      variables: createData.variables,
-      version: '1.0.0',
-      isActive: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      metadata: createData.metadata || {},
-    };
-
-    this.prompts.set(id, prompt);
-    this.logger.log(`Prompt criado: ${id} - ${prompt.title}`);
-    return prompt;
+      this.logger.log(`Prompt legal criado: ${prompt.id} - ${prompt.name}`);
+      return prompt;
+    } catch (error) {
+      this.logger.error('Erro ao criar prompt legal:', error);
+      throw error;
+    }
   }
 
   /**
    * Busca um prompt por ID
    */
-  getPromptById(promptId: string): LegalPrompt | null {
-    return this.prompts.get(promptId) || null;
+  async getPromptById(id: string): Promise<LegalPrompt | null> {
+    try {
+      const prompt = await this.prismaService.legalPrompt.findUnique({
+        where: { id },
+      });
+
+      if (!prompt) {
+        this.logger.warn(`Prompt não encontrado: ${id}`);
+        return null;
+      }
+
+      return prompt;
+    } catch (error) {
+      this.logger.error(`Erro ao buscar prompt ${id}:`, error);
+      throw error;
+    }
   }
 
   /**
-   * Busca prompts por critérios
+   * Lista prompts com filtros
    */
-  searchPrompts(options: PromptSearchOptions): LegalPrompt[] {
-    let results = Array.from(this.prompts.values());
+  async getPrompts(options: LegalPromptQueryOptions = {}): Promise<LegalPrompt[]> {
+    try {
+      const where: any = {};
 
-    if (options.type) {
-      results = results.filter(p => p.type === options.type);
+      if (options.jurisdiction) {
+        where.jurisdiction = options.jurisdiction;
+      }
+
+      if (options.isActive !== undefined) {
+        where.isActive = options.isActive;
+      }
+
+      const prompts = await this.prismaService.legalPrompt.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: options.limit || 50,
+        skip: options.offset || 0,
+      });
+
+      this.logger.log(`Encontrados ${prompts.length} prompts`);
+      return prompts;
+    } catch (error) {
+      this.logger.error('Erro ao listar prompts:', error);
+      throw error;
     }
-
-    if (options.jurisdiction) {
-      results = results.filter(p => p.jurisdiction === options.jurisdiction);
-    }
-
-    if (options.isActive !== undefined) {
-      results = results.filter(p => p.isActive === options.isActive);
-    }
-
-    if (options.search) {
-      const searchLower = options.search.toLowerCase();
-      results = results.filter(p => 
-        p.title.toLowerCase().includes(searchLower) ||
-        p.description.toLowerCase().includes(searchLower)
-      );
-    }
-
-    // Aplicar paginação
-    const offset = options.offset || 0;
-    const limit = options.limit || 10;
-    results = results.slice(offset, offset + limit);
-
-    this.logger.log(`Busca de prompts: ${results.length} resultados encontrados`);
-    return results;
   }
 
   /**
-   * Executa um prompt com variáveis
+   * Busca prompt ativo por jurisdição
    */
-  executePrompt(executeData: ExecutePromptDto): string {
-    const prompt = this.getPromptById(executeData.promptId);
-    
-    if (!prompt) {
-      throw new NotFoundException(`Prompt não encontrado: ${executeData.promptId}`);
+  async getActivePromptByJurisdiction(jurisdiction: string): Promise<LegalPrompt | null> {
+    try {
+      const prompt = await this.prismaService.legalPrompt.findFirst({
+        where: {
+          jurisdiction,
+          isActive: true,
+        },
+        orderBy: { updatedAt: 'desc' },
+      });
+
+      if (!prompt) {
+        this.logger.warn(`Nenhum prompt ativo encontrado para jurisdição: ${jurisdiction}`);
+        return null;
+      }
+
+      this.logger.log(`Prompt ativo encontrado para ${jurisdiction}: ${prompt.name}`);
+      return prompt;
+    } catch (error) {
+      this.logger.error(`Erro ao buscar prompt ativo para ${jurisdiction}:`, error);
+      throw error;
     }
-
-    if (!prompt.isActive) {
-      throw new Error(`Prompt inativo: ${executeData.promptId}`);
-    }
-
-    // Validar variáveis obrigatórias
-    const missingVariables = prompt.variables
-      .filter(v => v.required && !executeData.variables[v.name])
-      .map(v => v.name);
-
-    if (missingVariables.length > 0) {
-      throw new Error(`Variáveis obrigatórias não fornecidas: ${missingVariables.join(', ')}`);
-    }
-
-    // Substituir variáveis no prompt
-    let processedPrompt = prompt.prompt;
-    prompt.variables.forEach(variable => {
-      const value = executeData.variables[variable.name] || variable.defaultValue || '';
-      const placeholder = `{${variable.name}}`;
-      processedPrompt = processedPrompt.replace(new RegExp(placeholder, 'g'), String(value));
-    });
-
-    this.logger.log(`Prompt executado: ${executeData.promptId} para usuário ${executeData.userId}`);
-    return processedPrompt;
   }
 
   /**
    * Atualiza um prompt
    */
-  updatePrompt(promptId: string, updateData: UpdatePromptDto): LegalPrompt {
-    const prompt = this.getPromptById(promptId);
-    
-    if (!prompt) {
-      throw new NotFoundException(`Prompt não encontrado: ${promptId}`);
+  async updatePrompt(id: string, updateDto: UpdateLegalPromptDto): Promise<LegalPrompt> {
+    try {
+      const prompt = await this.prismaService.legalPrompt.update({
+        where: { id },
+        data: {
+          ...updateDto,
+          updatedAt: new Date(),
+        },
+      });
+
+      this.logger.log(`Prompt atualizado: ${id}`);
+      return prompt;
+    } catch (error) {
+      this.logger.error(`Erro ao atualizar prompt ${id}:`, error);
+      throw error;
     }
-
-    const updatedPrompt: LegalPrompt = {
-      ...prompt,
-      ...updateData,
-      updatedAt: new Date().toISOString(),
-    };
-
-    this.prompts.set(promptId, updatedPrompt);
-    this.logger.log(`Prompt atualizado: ${promptId}`);
-    return updatedPrompt;
   }
 
   /**
-   * Lista todos os tipos de prompt disponíveis
+   * Remove um prompt (soft delete)
    */
-  getPromptTypes(): LegalPromptType[] {
-    return [
-      'contract_analysis',
-      'contract_drafting',
-      'petition_drafting',
-      'legal_opinion',
-      'consultation',
-      'document_review',
-      'clause_suggestion',
-      'risk_analysis',
-      'jurisprudence_search',
-      'legal_research',
-    ];
+  async deletePrompt(id: string): Promise<void> {
+    try {
+      await this.prismaService.legalPrompt.update({
+        where: { id },
+        data: { isActive: false },
+      });
+
+      this.logger.log(`Prompt desativado: ${id}`);
+    } catch (error) {
+      this.logger.error(`Erro ao desativar prompt ${id}:`, error);
+      throw error;
+    }
   }
 
   /**
-   * Obtém prompts por jurisdição
+   * Cria uma nova conversa
    */
-  getPromptsByJurisdiction(jurisdiction: string): LegalPrompt[] {
-    return Array.from(this.prompts.values())
-      .filter(p => p.jurisdiction === jurisdiction && p.isActive);
+  async createConversation(createDto: CreateConversationDto): Promise<Conversation> {
+    try {
+      const conversation = await this.prismaService.conversation.create({
+        data: {
+          userId: createDto.userId,
+          promptId: createDto.promptId,
+          previousResponseId: createDto.previousResponseId,
+          openaiThreadId: createDto.openaiThreadId,
+          jurisdiction: createDto.jurisdiction,
+          messages: createDto.initialMessage ? [createDto.initialMessage] : [] as any,
+        },
+      });
+
+      this.logger.log(`Conversa criada: ${conversation.id}`);
+      return {
+        ...conversation,
+        messages: conversation.messages as unknown as ConversationMessage[],
+      } as Conversation;
+    } catch (error) {
+      this.logger.error('Erro ao criar conversa:', error);
+      throw error;
+    }
   }
 
   /**
-   * Gera ID único para prompt
+   * Busca conversa ativa por usuário e jurisdição
    */
-  private generatePromptId(type: LegalPromptType, jurisdiction: string): string {
-    const timestamp = Date.now();
-    return `${type}_${jurisdiction}_${timestamp}`;
+  async getActiveConversationByUser(userId: string, jurisdiction: string): Promise<Conversation | null> {
+    try {
+      const conversation = await this.prismaService.conversation.findFirst({
+        where: {
+          userId,
+          jurisdiction,
+          status: 'active',
+        },
+        orderBy: { updatedAt: 'desc' },
+        include: {
+          prompt: true,
+        },
+      });
+
+      if (!conversation) {
+        this.logger.log(`Nenhuma conversa ativa encontrada para usuário ${userId} em ${jurisdiction}`);
+        return null;
+      }
+
+      return {
+        ...conversation,
+        messages: conversation.messages as unknown as ConversationMessage[],
+        prompt: conversation.prompt,
+      } as Conversation;
+    } catch (error) {
+      this.logger.error(`Erro ao buscar conversa ativa para usuário ${userId}:`, error);
+      throw error;
+    }
   }
 
   /**
-   * Obtém configuração do serviço
+   * Prepara requisição para OpenAI com contexto da conversa
    */
-  getConfig(): LegalPromptConfig {
-    return this.config;
+  async prepareOpenAIRequest(
+    conversation: Conversation,
+    userMessage: string
+  ): Promise<OpenAIRequest> {
+    try {
+      // Buscar o prompt associado à conversa
+      const prompt = await this.getPromptById(conversation.promptId);
+      if (!prompt) {
+        throw new Error('Prompt não encontrado para a conversa');
+      }
+
+      const systemMessage = {
+        role: 'system' as const,
+        content: prompt.content,
+      };
+
+      const conversationMessages = conversation.messages.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      }));
+
+      const newUserMessage = {
+        role: 'user' as const,
+        content: userMessage,
+      };
+
+      const messages = [systemMessage, ...conversationMessages, newUserMessage];
+
+      const request: OpenAIRequest = {
+        model: 'gpt-4o-2024-08-06',
+        messages,
+        temperature: 0.7,
+        max_tokens: 2000,
+      };
+
+      // Adicionar previous_response_id se disponível
+      if (conversation.previousResponseId) {
+        request.previous_response_id = conversation.previousResponseId;
+      }
+
+      // Adicionar response_format para saídas estruturadas se necessário
+      if (conversation.jurisdiction === 'BR') {
+        request.response_format = {
+          type: 'json_schema',
+          json_schema: {
+            name: 'legal_response_br',
+            schema: {
+              type: 'object',
+              properties: {
+                resposta: { type: 'string' },
+                referencias: {
+                  type: 'array',
+                  items: { type: 'string' }
+                },
+                sugestoes: {
+                  type: 'array',
+                  items: { type: 'string' }
+                }
+              },
+              required: ['resposta']
+            },
+            strict: false
+          }
+        };
+      }
+
+      return request;
+    } catch (error) {
+      this.logger.error('Erro ao preparar requisição OpenAI:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Inicializa prompts padrão para cada jurisdição
+   */
+  async initializeDefaultPrompts(): Promise<void> {
+    try {
+      const defaultPrompts = [
+        {
+          jurisdiction: 'BR',
+          name: 'Assistente Jurídico Brasil',
+          description: 'Prompt para consultas jurídicas no Brasil',
+          content: `Você é um assistente jurídico especializado em legislação brasileira. 
+            Forneça respostas precisas baseadas na legislação vigente no Brasil, 
+            incluindo Código Civil, Código Penal, CLT, Constituição Federal e outras leis aplicáveis.
+            Sempre mencione que suas respostas são informativas e não substituem consulta jurídica profissional.`,
+        },
+        {
+          jurisdiction: 'PT',
+          name: 'Assistente Jurídico Portugal',
+          description: 'Prompt para consultas jurídicas em Portugal',
+          content: `Você é um assistente jurídico especializado em legislação portuguesa.
+            Forneça respostas precisas baseadas na legislação vigente em Portugal,
+            incluindo Código Civil, Código Penal, Código do Trabalho e outras leis aplicáveis.
+            Sempre mencione que suas respostas são informativas e não substituem consulta jurídica profissional.`,
+        },
+        {
+          jurisdiction: 'ES',
+          name: 'Assistente Jurídico Espanha',
+          description: 'Prompt para consultas jurídicas na Espanha',
+          content: `Você é um assistente jurídico especializado em legislação espanhola.
+            Forneça respostas precisas baseadas na legislação vigente na Espanha,
+            incluindo Código Civil, Código Penal, Estatuto de los Trabajadores e outras leis aplicáveis.
+            Sempre mencione que suas respostas são informativas e não substituem consulta jurídica profissional.`,
+        },
+      ];
+
+      for (const promptData of defaultPrompts) {
+        const existingPrompt = await this.getActivePromptByJurisdiction(promptData.jurisdiction);
+        
+        if (!existingPrompt) {
+          await this.createPrompt(promptData);
+          this.logger.log(`Prompt padrão criado para ${promptData.jurisdiction}`);
+        }
+      }
+
+      this.logger.log('Prompts padrão inicializados com sucesso');
+    } catch (error) {
+      this.logger.error('Erro ao inicializar prompts padrão:', error);
+      throw error;
+    }
   }
 }

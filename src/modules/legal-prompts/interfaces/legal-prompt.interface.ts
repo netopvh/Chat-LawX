@@ -1,97 +1,109 @@
 export interface LegalPrompt {
   id: string;
-  type: LegalPromptType;
   jurisdiction: string;
-  title: string;
-  description: string;
-  prompt: string;
-  variables: PromptVariable[];
-  version: string;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-  metadata?: Record<string, any>;
-}
-
-export type LegalPromptType = 
-  | 'contract_analysis'
-  | 'contract_drafting'
-  | 'petition_drafting'
-  | 'legal_opinion'
-  | 'consultation'
-  | 'document_review'
-  | 'clause_suggestion'
-  | 'risk_analysis'
-  | 'jurisprudence_search'
-  | 'legal_research';
-
-export interface PromptVariable {
   name: string;
-  type: 'string' | 'number' | 'boolean' | 'date' | 'array';
-  required: boolean;
-  description: string;
-  defaultValue?: any;
-  options?: string[];
-}
-
-export interface PromptExecution {
-  promptId: string;
-  variables: Record<string, any>;
-  jurisdiction: string;
-  userId: string;
-  executedAt: string;
-  result?: string;
-  error?: string;
-}
-
-export interface PromptTemplate {
-  type: LegalPromptType;
-  jurisdiction: string;
-  template: string;
-  variables: PromptVariable[];
-  examples: string[];
-}
-
-export interface LegalPromptConfig {
-  defaultJurisdiction: string;
-  supportedJurisdictions: string[];
-  maxPromptLength: number;
-  maxVariables: number;
-  cacheEnabled: boolean;
-  versioningEnabled: boolean;
-}
-
-export interface CreatePromptDto {
-  type: LegalPromptType;
-  jurisdiction: string;
-  title: string;
-  description: string;
-  prompt: string;
-  variables: PromptVariable[];
-  metadata?: Record<string, any>;
-}
-
-export interface UpdatePromptDto {
-  title?: string;
   description?: string;
-  prompt?: string;
-  variables?: PromptVariable[];
-  isActive?: boolean;
-  metadata?: Record<string, any>;
+  content: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
-export interface ExecutePromptDto {
-  promptId: string;
-  variables: Record<string, any>;
+export interface CreateLegalPromptDto {
   jurisdiction: string;
-  userId: string;
+  name: string;
+  description?: string;
+  content: string;
+  isActive?: boolean;
 }
 
-export interface PromptSearchOptions {
-  type?: LegalPromptType;
+export interface UpdateLegalPromptDto {
+  name?: string;
+  description?: string;
+  content?: string;
+  isActive?: boolean;
+}
+
+export interface LegalPromptQueryOptions {
   jurisdiction?: string;
   isActive?: boolean;
   limit?: number;
   offset?: number;
-  search?: string;
+}
+
+export interface ConversationMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+}
+
+export interface Conversation {
+  id: string;
+  userId: string;
+  promptId: string;
+  previousResponseId?: string;
+  openaiThreadId?: string;
+  openaiResponseId?: string;
+  messages: ConversationMessage[];
+  jurisdiction: string;
+  status: 'active' | 'completed' | 'archived';
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreateConversationDto {
+  userId: string;
+  promptId: string;
+  previousResponseId?: string;
+  openaiThreadId?: string;
+  jurisdiction: string;
+  initialMessage?: ConversationMessage;
+}
+
+export interface UpdateConversationDto {
+  previousResponseId?: string;
+  openaiThreadId?: string;
+  openaiResponseId?: string;
+  messages?: ConversationMessage[];
+  status?: 'active' | 'completed' | 'archived';
+}
+
+export interface OpenAIResponse {
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    message: {
+      role: string;
+      content: string;
+    };
+    finish_reason: string;
+  }>;
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+  system_fingerprint?: string;
+}
+
+export interface OpenAIRequest {
+  model: string;
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant';
+    content: string;
+  }>;
+  response_format?: {
+    type: 'json_schema';
+    json_schema: {
+      name: string;
+      schema: any;
+      strict?: boolean;
+    };
+  };
+  previous_response_id?: string;
+  temperature?: number;
+  max_tokens?: number;
 }

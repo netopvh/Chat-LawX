@@ -2735,20 +2735,13 @@ Tipos de consulta:
     }
   ): Promise<string> {
     try {
-      // Buscar prompt específico para a jurisdição
-      const prompts = this.legalPromptsService.searchPrompts({
-        type: promptType as any,
-        jurisdiction,
-        isActive: true,
-        limit: 1
-      });
+      // Buscar prompt ativo para a jurisdição
+      const prompt = await this.legalPromptsService.getActivePromptByJurisdiction(jurisdiction);
 
-      if (prompts.length === 0) {
+      if (!prompt) {
         // Usar prompt genérico se não encontrar específico
         return await this.generateGenericLegalResponse(context.message, jurisdiction);
       }
-
-      const prompt = prompts[0];
       
       // Preparar variáveis para o prompt
       const variables = {
@@ -2758,13 +2751,8 @@ Tipos de consulta:
         user_id: context.userId || '',
       };
 
-      // Executar prompt
-      const processedPrompt = this.legalPromptsService.executePrompt({
-        promptId: prompt.id,
-        variables,
-        jurisdiction,
-        userId: context.userId || '',
-      });
+      // Usar o conteúdo do prompt diretamente
+      const processedPrompt = prompt.content;
 
       // Gerar resposta com IA
       const completion = await this.openai.chat.completions.create({

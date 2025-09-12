@@ -54,3 +54,36 @@ model Usage {
   
   @@map("usage")
 }
+
+model LegalPrompt {
+  id          String   @id @default(cuid())
+  jurisdiction String
+  name        String
+  description String?
+  content     String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  conversations Conversation[]
+  
+  @@map("legal_prompts")
+}
+
+model Conversation {
+  id                    String   @id @default(cuid())
+  userId                String
+  promptId              String
+  previousResponseId    String?
+  openaiThreadId        String?
+  openaiResponseId      String?
+  messages              Json     // Array de mensagens da conversa
+  jurisdiction          String
+  status                String   @default("active") // active, completed, archived
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  
+  prompt LegalPrompt @relation(fields: [promptId], references: [id])
+  
+  @@map("conversations")
+}

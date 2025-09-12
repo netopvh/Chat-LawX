@@ -106,4 +106,65 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       orderBy: { createdAt: 'desc' },
     });
   }
+
+  // Métodos para Legal Prompts
+  async findActivePromptByJurisdiction(jurisdiction: string) {
+    return this.legalPrompt.findFirst({
+      where: {
+        jurisdiction,
+        isActive: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  async findActiveConversationByUser(userId: string, jurisdiction: string) {
+    return this.conversation.findFirst({
+      where: {
+        userId,
+        jurisdiction,
+        status: 'active',
+      },
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        prompt: true,
+      },
+    });
+  }
+
+  async createConversation(data: {
+    userId: string;
+    promptId: string;
+    previousResponseId?: string;
+    openaiThreadId?: string;
+    jurisdiction: string;
+    messages?: any[];
+  }) {
+    return this.conversation.create({
+      data: {
+        userId: data.userId,
+        promptId: data.promptId,
+        previousResponseId: data.previousResponseId,
+        openaiThreadId: data.openaiThreadId,
+        jurisdiction: data.jurisdiction,
+        messages: data.messages || [],
+      },
+    });
+  }
+
+  async updateConversation(id: string, data: {
+    previousResponseId?: string;
+    openaiThreadId?: string;
+    openaiResponseId?: string;
+    messages?: any[];
+    status?: string;
+  }) {
+    return this.conversation.update({
+      where: { id },
+      data: {
+        ...data,
+        updatedAt: new Date(),
+      },
+    });
+  }
 }

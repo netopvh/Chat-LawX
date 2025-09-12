@@ -1,12 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { StripeService } from '../stripe/stripe.service';
+import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
 import { Subscription, CreateSubscriptionDto, UpdateSubscriptionDto, SubscriptionWithPlan } from './subscriptions.interface';
 
 @Injectable()
 export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
 
-  constructor(private readonly supabaseService: SupabaseService) {}
+  constructor(
+    private readonly supabaseService: SupabaseService,
+    private readonly stripeService: StripeService,
+    private readonly jurisdictionService: JurisdictionService,
+  ) {}
 
   async createSubscription(createSubscriptionDto: CreateSubscriptionDto): Promise<Subscription> {
     try {
@@ -215,6 +221,306 @@ export class SubscriptionsService {
       });
     } catch (error) {
       this.logger.error('Erro ao criar assinatura Fremium:', error);
+      throw error;
+    }
+  }
+
+  // ===== NOVOS MÉTODOS PARA CHAT LAWX =====
+
+  /**
+   * Cria assinatura com integração Stripe
+   */
+  async createStripeSubscription(
+    userId: string,
+    planId: string,
+    billingCycle: 'monthly' | 'yearly',
+    stripeCustomerId: string
+  ): Promise<Subscription> {
+    try {
+      // Buscar plano para obter informações do Stripe
+      const { data: plan, error: planError } = await this.supabaseService.getClient()
+        .from('plans')
+        .select('*')
+        .eq('id', planId)
+        .single();
+
+      if (planError) {
+        this.logger.error('Erro ao buscar plano:', planError);
+        throw new Error('Plano não encontrado');
+      }
+
+      // Criar assinatura no Stripe
+      const stripePriceId = billingCycle === 'monthly' 
+        ? plan.stripe_price_id_monthly 
+        : plan.stripe_price_id_yearly;
+
+      if (!stripePriceId) {
+        throw new Error('Preço do Stripe não encontrado para este plano');
+      }
+
+      const stripeSubscription = await this.stripeService.createSubscription({
+        customer: stripeCustomerId,
+        items: [{ price: stripePriceId }],
+        metadata: {
+          user_id: userId,
+          plan_id: planId,
+          jurisdiction: plan.jurisdiction,
+        },
+      });
+
+      // Criar assinatura local
+      const subscriptionData = {
+        user_id: userId,
+        plan_id: planId,
+        billing_cycle: billingCycle,
+        status: 'active' as const,
+        stripe_subscription_id: stripeSubscription.id,
+        stripe_customer_id: stripeCustomerId,
+        jurisdiction: plan.jurisdiction,
+        sync_status: 'synced' as const,
+        last_sync_at: new Date().toISOString(),
+      };
+
+      return await this.createSubscription(subscriptionData);
+    } catch (error) {
+      this.logger.error('Erro ao criar assinatura Stripe:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Processa webhook do Stripe
+   */
+  async processStripeWebhook(event: any): Promise<void> {
+    try {
+      this.logger.log('Processando webhook do Stripe:', event.type);
+
+      switch (event.type) {
+        case 'customer.subscription.created':
+          await this.handleSubscriptionCreated(event.data.object);
+          break;
+        case 'customer.subscription.updated':
+          await this.handleSubscriptionUpdated(event.data.object);
+          break;
+        case 'customer.subscription.deleted':
+          await this.handleSubscriptionDeleted(event.data.object);
+          break;
+        case 'invoice.payment_succeeded':
+          await this.handlePaymentSucceeded(event.data.object);
+          break;
+        case 'invoice.payment_failed':
+          await this.handlePaymentFailed(event.data.object);
+          break;
+        default:
+          this.logger.log('Evento do Stripe não processado:', event.type);
+      }
+    } catch (error) {
+      this.logger.error('Erro ao processar webhook do Stripe:', error);
+      throw error;
+    }
+  }
+
+  private async handleSubscriptionCreated(stripeSubscription: any): Promise<void> {
+    try {
+      const userId = stripeSubscription.metadata?.user_id;
+      const planId = stripeSubscription.metadata?.plan_id;
+
+      if (!userId || !planId) {
+        this.logger.warn('Assinatura Stripe sem metadata necessária:', stripeSubscription.id);
+        return;
+      }
+
+      // Verificar se assinatura já existe
+      const existingSubscription = await this.getSubscriptionByStripeId(stripeSubscription.id);
+      if (existingSubscription) {
+        this.logger.log('Assinatura já existe:', stripeSubscription.id);
+        return;
+      }
+
+      // Criar assinatura local
+      await this.createSubscription({
+        user_id: userId,
+        plan_id: planId,
+        billing_cycle: stripeSubscription.items.data[0].price.recurring.interval,
+        status: this.mapStripeStatus(stripeSubscription.status),
+        stripe_subscription_id: stripeSubscription.id,
+        stripe_customer_id: stripeSubscription.customer,
+        jurisdiction: stripeSubscription.metadata?.jurisdiction,
+        sync_status: 'synced',
+        last_sync_at: new Date().toISOString(),
+      });
+
+      this.logger.log('Assinatura criada via webhook:', stripeSubscription.id);
+    } catch (error) {
+      this.logger.error('Erro ao processar criação de assinatura:', error);
+    }
+  }
+
+  private async handleSubscriptionUpdated(stripeSubscription: any): Promise<void> {
+    try {
+      const localSubscription = await this.getSubscriptionByStripeId(stripeSubscription.id);
+      if (!localSubscription) {
+        this.logger.warn('Assinatura local não encontrada para atualização:', stripeSubscription.id);
+        return;
+      }
+
+      await this.updateSubscription(localSubscription.id, {
+        status: this.mapStripeStatus(stripeSubscription.status),
+        current_period_end: new Date(stripeSubscription.current_period_end * 1000).toISOString(),
+        sync_status: 'synced',
+        last_sync_at: new Date().toISOString(),
+      });
+
+      this.logger.log('Assinatura atualizada via webhook:', stripeSubscription.id);
+    } catch (error) {
+      this.logger.error('Erro ao processar atualização de assinatura:', error);
+    }
+  }
+
+  private async handleSubscriptionDeleted(stripeSubscription: any): Promise<void> {
+    try {
+      const localSubscription = await this.getSubscriptionByStripeId(stripeSubscription.id);
+      if (!localSubscription) {
+        this.logger.warn('Assinatura local não encontrada para cancelamento:', stripeSubscription.id);
+        return;
+      }
+
+      await this.updateSubscription(localSubscription.id, {
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        sync_status: 'synced',
+        last_sync_at: new Date().toISOString(),
+      });
+
+      this.logger.log('Assinatura cancelada via webhook:', stripeSubscription.id);
+    } catch (error) {
+      this.logger.error('Erro ao processar cancelamento de assinatura:', error);
+    }
+  }
+
+  private async handlePaymentSucceeded(invoice: any): Promise<void> {
+    try {
+      const subscriptionId = invoice.subscription;
+      if (!subscriptionId) return;
+
+      const localSubscription = await this.getSubscriptionByStripeId(subscriptionId);
+      if (!localSubscription) return;
+
+      await this.updateSubscription(localSubscription.id, {
+        status: 'active',
+        sync_status: 'synced',
+        last_sync_at: new Date().toISOString(),
+      });
+
+      this.logger.log('Pagamento processado com sucesso:', invoice.id);
+    } catch (error) {
+      this.logger.error('Erro ao processar pagamento bem-sucedido:', error);
+    }
+  }
+
+  private async handlePaymentFailed(invoice: any): Promise<void> {
+    try {
+      const subscriptionId = invoice.subscription;
+      if (!subscriptionId) return;
+
+      const localSubscription = await this.getSubscriptionByStripeId(subscriptionId);
+      if (!localSubscription) return;
+
+      await this.updateSubscription(localSubscription.id, {
+        status: 'past_due',
+        sync_status: 'synced',
+        last_sync_at: new Date().toISOString(),
+      });
+
+      this.logger.log('Pagamento falhou:', invoice.id);
+    } catch (error) {
+      this.logger.error('Erro ao processar falha de pagamento:', error);
+    }
+  }
+
+  /**
+   * Busca assinatura por ID do Stripe
+   */
+  private async getSubscriptionByStripeId(stripeSubscriptionId: string): Promise<Subscription | null> {
+    try {
+      const { data, error } = await this.supabaseService.getClient()
+        .from('subscriptions')
+        .select('*')
+        .eq('stripe_subscription_id', stripeSubscriptionId)
+        .single();
+
+      if (error) {
+        return null;
+      }
+
+      return data;
+    } catch (error) {
+      this.logger.error('Erro ao buscar assinatura por ID do Stripe:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Mapeia status do Stripe para status local
+   */
+  private mapStripeStatus(stripeStatus: string): 'active' | 'cancelled' | 'expired' | 'past_due' | 'unpaid' {
+    switch (stripeStatus) {
+      case 'active':
+        return 'active';
+      case 'canceled':
+      case 'cancelled':
+        return 'cancelled';
+      case 'incomplete':
+      case 'incomplete_expired':
+        return 'expired';
+      case 'past_due':
+        return 'past_due';
+      case 'unpaid':
+        return 'unpaid';
+      default:
+        return 'expired';
+    }
+  }
+
+  /**
+   * Sincroniza assinaturas com Stripe
+   */
+  async syncSubscriptionsWithStripe(): Promise<void> {
+    try {
+      const { data: subscriptions, error } = await this.supabaseService.getClient()
+        .from('subscriptions')
+        .select('*')
+        .eq('sync_status', 'pending')
+        .not('stripe_subscription_id', 'is', null);
+
+      if (error) {
+        this.logger.error('Erro ao buscar assinaturas para sincronização:', error);
+        return;
+      }
+
+      for (const subscription of subscriptions) {
+        try {
+          const stripeSubscription = await this.stripeService.getSubscription(subscription.stripe_subscription_id);
+          
+          await this.updateSubscription(subscription.id, {
+            status: this.mapStripeStatus(stripeSubscription.status),
+            current_period_end: new Date(stripeSubscription.current_period_end * 1000).toISOString(),
+            sync_status: 'synced',
+            last_sync_at: new Date().toISOString(),
+          });
+
+          this.logger.log(`Assinatura ${subscription.id} sincronizada com Stripe`);
+        } catch (error) {
+          this.logger.error(`Erro ao sincronizar assinatura ${subscription.id}:`, error);
+          
+          await this.updateSubscription(subscription.id, {
+            sync_status: 'error',
+            last_sync_at: new Date().toISOString(),
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.error('Erro na sincronização com Stripe:', error);
       throw error;
     }
   }

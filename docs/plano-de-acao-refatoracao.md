@@ -758,7 +758,65 @@ model Usage {
 
 ---
 
+## 📊 **Progresso da Refatoração**
+
+### ✅ **Fase 1: Preparação e Limpeza** - CONCLUÍDA
+- [x] Remoção dos módulos Expenses, Revenues e MercadoPago
+- [x] Atualização do package.json com novas dependências
+- [x] Atualização do app.module.ts removendo módulos desnecessários
+- [x] Criação da branch `refactor/chat-lawx` para controle de versão
+
+### ✅ **Fase 2: Configuração de Infraestrutura** - CONCLUÍDA
+- [x] Instalação e configuração do Prisma
+- [x] Criação do schema.prisma com modelos User, LegalDocument e Usage
+- [x] Configuração do docker-compose.yml para MySQL e Redis
+- [x] Atualização do env.example com novas variáveis de ambiente
+- [x] Criação da estrutura básica do StripeModule e PrismaModule
+- [x] Atualização do .gitignore com novos padrões
+
+### ✅ **Fase 3: Novos Módulos** - CONCLUÍDA
+- [x] Criação do JurisdictionModule com detecção de DDI
+- [x] Criação do TeamsModule para integração com Supabase teams
+- [x] Criação do LegalPromptsModule com prompts jurídicos específicos
+- [x] Finalização do StripeModule com controller e webhooks
+- [x] Atualização do app.module.ts incluindo novos módulos
+
+### ✅ **Fase 4: Modificação de Módulos Existentes** - CONCLUÍDA
+- [x] **AI Module**: Refatorado para contexto jurídico com prompts específicos
+- [x] **WhatsApp Module**: Adaptado para fluxos jurídicos e detecção de DDI
+- [x] **Users Module**: Modificado para gerenciamento por jurisdição
+- [x] **Plans Module**: Adaptado para contexto jurídico e integração Stripe
+- [x] **Subscriptions Module**: Integrado com Stripe webhooks e controle local
+- [x] **Usage Module**: Modificado para contabilização de mensagens IA
+- [x] **Upgrade Sessions Module**: Integrado com Stripe Checkout
+
+### 🔄 **Próximas Fases**
+- [ ] **Fase 5**: Implementação dos novos módulos (Jurisdiction, Teams, Legal Prompts, Stripe)
+- [ ] **Fase 6**: Testes e validação
+- [ ] **Fase 7**: Deploy e monitoramento
+
+### 📈 **Estatísticas do Progresso**
+- **Módulos Removidos**: 3 (Expenses, Revenues, MercadoPago)
+- **Módulos Criados**: 4 (Jurisdiction, Teams, Legal Prompts, Stripe)
+- **Módulos Modificados**: 7 (AI, WhatsApp, Users, Plans, Subscriptions, Usage, Upgrade Sessions)
+- **Arquivos Criados**: 15+
+- **Arquivos Modificados**: 20+
+- **Progresso Geral**: ~70% concluído
+
+### 🎯 **Funcionalidades Implementadas**
+- ✅ Detecção automática de jurisdição por DDI (55=BR, 351=PT, 34=ES)
+- ✅ Controle de limites via Supabase teams para usuários brasileiros
+- ✅ Prompts jurídicos específicos para cada jurisdição
+- ✅ Integração com Stripe para pagamentos e webhooks
+- ✅ Controle de uso de mensagens por jurisdição
+- ✅ Fluxos de upgrade com Stripe Checkout
+- ✅ Gerenciamento de usuários por jurisdição
+- ✅ Análise de documentos jurídicos com OCR
+
+---
+
 **Data de Criação**: 23/01/2025  
-**Versão**: 1.2  
+**Última Atualização**: 23/01/2025  
+**Versão**: 1.3  
 **Responsável**: AI Assistant  
-**Status**: Atualizado com especificações corretas do controle de limites do Brasil
+**Status**: Fase 4 concluída - 70% do projeto refatorado

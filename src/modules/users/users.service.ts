@@ -2,6 +2,9 @@ import { Injectable, NotFoundException, ConflictException } from '@nestjs/common
 import { SupabaseService } from '../supabase/supabase.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { UsageService } from '../usage/usage.service';
+import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
+import { TeamsService } from '../teams/teams.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 
 export interface User {
@@ -9,6 +12,16 @@ export interface User {
   phone: string;
   name: string;
   is_registered: boolean;
+  jurisdiction?: string;
+  ddi?: string;
+  legal_specialty?: string;
+  oab_number?: string;
+  team_id?: string;
+  stripe_customer_id?: string;
+  preferred_language?: string;
+  timezone?: string;
+  is_verified?: boolean;
+  messages_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -19,6 +32,9 @@ export class UsersService {
     private supabaseService: SupabaseService,
     private subscriptionsService: SubscriptionsService,
     private usageService: UsageService,
+    private jurisdictionService: JurisdictionService,
+    private teamsService: TeamsService,
+    private prismaService: PrismaService,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<User> {
@@ -178,56 +194,200 @@ export class UsersService {
   async getOrCreateUser(phone: string): Promise<User> {
     console.log('👤 Buscando ou criando usuário para:', phone);
     
-    let user = await this.findByPhone(phone);
+    // Detectar jurisdição baseada no número de telefone
+    const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+    console.log(`🌍 Jurisdição detectada: ${jurisdiction.jurisdiction} para ${phone}`);
     
-    if (!user) {
-      console.log('👤 Usuário não encontrado, criando novo...');
-      
-      try {
-        // Criar usuário básico sem nome
-        const { data, error } = await this.supabaseService.getClient()
-          .auth.admin.createUser({
-            phone,
-            user_metadata: {
-              is_registered: false,
-            },
-            email_confirm: true,
-          });
+    // Para usuários brasileiros, buscar no Supabase teams
+    if (jurisdiction.jurisdiction === 'BR') {
+      return await this.getBrazilianUser(phone, jurisdiction);
+    }
+    
+    // Para Portugal/Espanha, usar Prisma local
+    return await this.getLocalUser(phone, jurisdiction);
+  }
 
-        if (error) {
-          console.error('❌ Erro ao criar usuário básico:', error);
-          
-          // Se o telefone já existe, tentar buscar novamente
-          if (error.message.includes('already registered')) {
-            console.log('🔄 Telefone já registrado, tentando buscar novamente...');
-            user = await this.findByPhone(phone);
-            if (user) {
-              console.log('✅ Usuário encontrado após erro:', user.id);
-              return user;
-            }
-          }
-          
-          throw new Error(`Erro ao criar usuário: ${error.message}`);
-        }
-        
-        console.log('✅ Usuário básico criado:', data.user.id);
-        
-        user = {
-          id: data.user.id,
-          phone: data.user.phone || phone,
-          name: '',
-          is_registered: false,
-          created_at: data.user.created_at,
-          updated_at: data.user.updated_at,
+  /**
+   * Busca ou cria usuário brasileiro (Supabase teams)
+   */
+  private async getBrazilianUser(phone: string, jurisdiction: any): Promise<User> {
+    try {
+      // Buscar no Supabase teams
+      const teamUser = await this.teamsService.findUserByPhone(phone);
+      
+      if (teamUser) {
+        return {
+          id: teamUser.id,
+          phone: teamUser.phone,
+          name: teamUser.name || '',
+          is_registered: true,
+          jurisdiction: jurisdiction.jurisdiction,
+          ddi: jurisdiction.ddi,
+          team_id: teamUser.team_id,
+          created_at: teamUser.created_at,
+          updated_at: teamUser.updated_at,
         };
-      } catch (error) {
-        console.error('❌ Erro crítico ao criar usuário:', error);
-        throw error;
       }
+      
+      // Se não encontrou, criar usuário básico
+      const { data, error } = await this.supabaseService.getClient()
+        .auth.admin.createUser({
+          phone,
+          user_metadata: {
+            is_registered: false,
+            jurisdiction: jurisdiction.jurisdiction,
+            ddi: jurisdiction.ddi,
+          },
+          email_confirm: true,
+        });
+
+      if (error) {
+        console.error('❌ Erro ao criar usuário brasileiro:', error);
+        throw new Error(`Erro ao criar usuário brasileiro: ${error.message}`);
+      }
+      
+      return {
+        id: data.user.id,
+        phone: data.user.phone || phone,
+        name: '',
+        is_registered: false,
+        jurisdiction: jurisdiction.jurisdiction,
+        ddi: jurisdiction.ddi,
+        created_at: data.user.created_at,
+        updated_at: data.user.updated_at,
+      };
+    } catch (error) {
+      console.error('❌ Erro crítico ao criar usuário brasileiro:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Busca ou cria usuário local (Portugal/Espanha - Prisma)
+   */
+  private async getLocalUser(phone: string, jurisdiction: any): Promise<User> {
+    try {
+      // Buscar no MySQL local via Prisma
+      const localUser = await this.prismaService.findUserByPhone(phone);
+      
+      if (localUser) {
+        return {
+          id: localUser.id,
+          phone: localUser.phone,
+          name: localUser.name || '',
+          is_registered: true,
+          jurisdiction: localUser.jurisdiction,
+          ddi: localUser.ddi,
+          messages_count: localUser.messagesCount,
+          created_at: localUser.createdAt.toISOString(),
+          updated_at: localUser.updatedAt.toISOString(),
+        };
+      }
+      
+      // Se não encontrou, criar usuário local
+      const newUser = await this.prismaService.createUser({
+        phone,
+        ddi: jurisdiction.ddi,
+        jurisdiction: jurisdiction.jurisdiction,
+        name: '',
+        messagesCount: 0,
+      });
+      
+      return {
+        id: newUser.id,
+        phone: newUser.phone,
+        name: newUser.name || '',
+        is_registered: false,
+        jurisdiction: newUser.jurisdiction,
+        ddi: newUser.ddi,
+        messages_count: newUser.messagesCount,
+        created_at: newUser.createdAt.toISOString(),
+        updated_at: newUser.updatedAt.toISOString(),
+      };
+    } catch (error) {
+      console.error('❌ Erro ao buscar/criar usuário local:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Registra usuário com informações jurídicas
+   */
+  async registerUserWithLegalInfo(
+    phone: string, 
+    name: string, 
+    legalSpecialty?: string,
+    oabNumber?: string
+  ): Promise<User> {
+    const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+    
+    if (jurisdiction.jurisdiction === 'BR') {
+      // Para Brasil, atualizar no Supabase
+      return await this.registerBrazilianUser(phone, name, legalSpecialty, oabNumber);
     } else {
-      console.log('👤 Usuário encontrado:', user.id);
+      // Para Portugal/Espanha, atualizar no MySQL local
+      return await this.registerLocalUser(phone, name, legalSpecialty);
+    }
+  }
+
+  private async registerBrazilianUser(
+    phone: string, 
+    name: string, 
+    legalSpecialty?: string,
+    oabNumber?: string
+  ): Promise<User> {
+    const user = await this.findByPhone(phone);
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado');
     }
 
-    return user;
+    // Atualizar metadata do usuário
+    const { data, error } = await this.supabaseService.getClient()
+      .auth.admin.updateUserById(user.id, {
+        user_metadata: {
+          name,
+          is_registered: true,
+          legal_specialty: legalSpecialty,
+          oab_number: oabNumber,
+          jurisdiction: 'BR',
+          ddi: '55',
+        },
+      });
+
+    if (error) throw new Error('Erro ao atualizar usuário brasileiro');
+    
+    return {
+      ...user,
+      name,
+      is_registered: true,
+      legal_specialty: legalSpecialty,
+      oab_number: oabNumber,
+      jurisdiction: 'BR',
+      ddi: '55',
+    };
+  }
+
+  private async registerLocalUser(
+    phone: string, 
+    name: string, 
+    legalSpecialty?: string
+  ): Promise<User> {
+    const updatedUser = await this.prismaService.updateUser(phone, {
+      name,
+      legalSpecialty,
+    });
+
+    return {
+      id: updatedUser.id,
+      phone: updatedUser.phone,
+      name: updatedUser.name || '',
+      is_registered: true,
+      jurisdiction: updatedUser.jurisdiction,
+      ddi: updatedUser.ddi,
+      legal_specialty: legalSpecialty,
+      messages_count: updatedUser.messagesCount,
+      created_at: updatedUser.createdAt.toISOString(),
+      updated_at: updatedUser.updatedAt.toISOString(),
+    };
   }
 } 

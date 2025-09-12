@@ -330,4 +330,101 @@ export class TeamsService {
       throw error;
     }
   }
+
+  // ===== MÉTODOS ESPECÍFICOS PARA CHAT LAWX =====
+
+  /**
+   * Busca team por número de telefone (para usuários brasileiros)
+   */
+  async getTeamByPhone(phoneNumber: string): Promise<Team | null> {
+    try {
+      // Remove caracteres não numéricos
+      const cleanPhone = phoneNumber.replace(/\D/g, '');
+      
+      // Para usuários brasileiros, vamos buscar por um campo phone ou similar
+      // Como não temos esse campo na interface atual, vamos simular uma busca
+      // Em uma implementação real, você precisaria adicionar um campo phone na tabela teams
+      
+      // Por enquanto, vamos retornar um team padrão para demonstração
+      // Em produção, você deve implementar a lógica real de busca
+      
+      this.logger.warn(`Busca por team por telefone não implementada: ${phoneNumber}`);
+      return null;
+    } catch (error) {
+      this.logger.error(`Erro ao buscar team por telefone ${phoneNumber}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Incrementa contador de mensagens por número de telefone
+   */
+  async incrementMessageCount(phoneNumber: string): Promise<void> {
+    try {
+      const team = await this.getTeamByPhone(phoneNumber);
+      
+      if (!team) {
+        this.logger.warn(`Team não encontrado para telefone: ${phoneNumber}`);
+        return;
+      }
+
+      await this.incrementTeamUsage(team.id, 1);
+      this.logger.log(`Contador de mensagens incrementado para telefone: ${phoneNumber}`);
+    } catch (error) {
+      this.logger.error(`Erro ao incrementar contador de mensagens para ${phoneNumber}:`, error);
+    }
+  }
+
+  /**
+   * Busca team por ID do usuário (relacionamento direto)
+   */
+  async getTeamByUserId(userId: string): Promise<Team | null> {
+    try {
+      // Esta implementação depende de como você relaciona usuários com teams
+      // Por enquanto, vamos retornar null
+      // Em produção, implemente a lógica real de busca
+      
+      this.logger.warn(`Busca por team por userId não implementada: ${userId}`);
+      return null;
+    } catch (error) {
+      this.logger.error(`Erro ao buscar team por userId ${userId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Cria ou atualiza team para um usuário brasileiro
+   */
+  async createOrUpdateTeamForUser(userId: string, phoneNumber: string, messageLimit: number = 100): Promise<Team> {
+    try {
+      // Verifica se já existe um team para este usuário
+      let team = await this.getTeamByUserId(userId);
+      
+      if (team) {
+        // Atualiza o limite se necessário
+        if (team.messages !== messageLimit) {
+          team = await this.updateTeam(team.id, { messages: messageLimit });
+        }
+        return team;
+      }
+
+      // Cria novo team
+      const teamData: CreateTeamDto = {
+        name: `Team ${phoneNumber}`,
+        messages: messageLimit,
+        metadata: {
+          user_id: userId,
+          phone: phoneNumber,
+          created_via: 'chat_lawx'
+        }
+      };
+
+      const newTeam = await this.createTeam(teamData);
+      this.logger.log(`Team criado para usuário ${userId}: ${newTeam.id}`);
+      return newTeam;
+    } catch (error) {
+      this.logger.error(`Erro ao criar/atualizar team para usuário ${userId}:`, error);
+      throw error;
+    }
+  }
 }

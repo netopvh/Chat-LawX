@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { PlansService } from '../plans/plans.service';
+import { StripeService } from '../stripe/stripe.service';
+import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
 import { 
   UpgradeSession, 
   CreateUpgradeSessionDto, 
@@ -16,7 +18,9 @@ export class UpgradeSessionsService {
 
   constructor(
     private readonly supabaseService: SupabaseService,
-    private readonly plansService: PlansService
+    private readonly plansService: PlansService,
+    private readonly stripeService: StripeService,
+    private readonly jurisdictionService: JurisdictionService
   ) {}
 
   async createSession(sessionData: CreateUpgradeSessionDto): Promise<UpgradeSession> {
@@ -242,9 +246,16 @@ export class UpgradeSessionsService {
     }
   }
 
-  async detectUpgradeIntent(text: string, userId: string): Promise<UpgradeIntent> {
+  async detectUpgradeIntent(text: string, userId: string, phoneNumber?: string): Promise<UpgradeIntent> {
     try {
-      const plans = await this.plansService.getUpgradePlans();
+      // Detectar jurisdição para filtrar planos
+      let jurisdiction = 'BR';
+      if (phoneNumber) {
+        const jurisdictionInfo = this.jurisdictionService.detectJurisdiction(phoneNumber);
+        jurisdiction = jurisdictionInfo.jurisdiction;
+      }
+
+      const plans = await this.plansService.getUpgradePlansByJurisdiction(jurisdiction);
       const planNames = plans.map(p => p.name.toLowerCase());
       
       const upgradeKeywords = [
@@ -289,6 +300,249 @@ export class UpgradeSessionsService {
         confidence: hasUpgradeIntent ? 0.9 : 0.1,
         detectedPlans: []
       };
+    }
+  }
+
+  // ===== NOVOS MÉTODOS PARA CHAT LAWX =====
+
+  /**
+   * Cria sessão de upgrade com Stripe Checkout
+   */
+  async createStripeCheckoutSession(
+    userId: string,
+    planName: string,
+    billingCycle: 'monthly' | 'yearly',
+    phoneNumber: string,
+    userEmail?: string
+  ): Promise<{
+    session: UpgradeSession;
+    checkoutUrl: string;
+  }> {
+    try {
+      // Detectar jurisdição
+      const jurisdictionInfo = this.jurisdictionService.detectJurisdiction(phoneNumber);
+      const jurisdiction = jurisdictionInfo.jurisdiction;
+
+      // Buscar plano
+      const plan = await this.plansService.getPlanByName(planName);
+      if (!plan) {
+        throw new Error(`Plano ${planName} não encontrado`);
+      }
+
+      // Calcular valor
+      const amount = billingCycle === 'monthly' ? plan.monthly_price : plan.yearly_price;
+
+      // Criar sessão de upgrade
+      const sessionData: CreateUpgradeSessionDto = {
+        user_id: userId,
+        phone: phoneNumber,
+        plan_name: planName,
+        billing_cycle: billingCycle,
+        amount,
+        current_step: 'payment_info',
+        jurisdiction
+      };
+
+      const session = await this.createSession(sessionData);
+
+      // Criar Stripe Checkout Session
+      const stripePriceId = billingCycle === 'monthly' 
+        ? plan.stripe_price_id_monthly 
+        : plan.stripe_price_id_yearly;
+
+      if (!stripePriceId) {
+        throw new Error(`Stripe Price ID não encontrado para ${planName} ${billingCycle}`);
+      }
+
+      const checkoutUrl = await this.stripeService.createCheckoutSession({
+        priceId: stripePriceId,
+        customerEmail: userEmail,
+        metadata: {
+          userId,
+          sessionId: session.id,
+          planName,
+          billingCycle,
+          jurisdiction
+        }
+      });
+
+      // Atualizar sessão com URL do checkout
+      await this.updateSession(session.id, {
+        stripe_checkout_url: checkoutUrl,
+        current_step: 'payment_processing'
+      });
+
+      return {
+        session,
+        checkoutUrl
+      };
+    } catch (error) {
+      this.logger.error('Erro ao criar sessão Stripe Checkout:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Processa webhook do Stripe para sessões de upgrade
+   */
+  async processStripeWebhook(event: any): Promise<void> {
+    try {
+      switch (event.type) {
+        case 'checkout.session.completed':
+          await this.handleCheckoutCompleted(event.data.object);
+          break;
+        case 'checkout.session.expired':
+          await this.handleCheckoutExpired(event.data.object);
+          break;
+        case 'invoice.payment_succeeded':
+          await this.handlePaymentSucceeded(event.data.object);
+          break;
+        case 'invoice.payment_failed':
+          await this.handlePaymentFailed(event.data.object);
+          break;
+        default:
+          this.logger.log(`Evento Stripe não processado: ${event.type}`);
+      }
+    } catch (error) {
+      this.logger.error('Erro ao processar webhook Stripe:', error);
+    }
+  }
+
+  /**
+   * Processa checkout completado
+   */
+  private async handleCheckoutCompleted(checkoutSession: any): Promise<void> {
+    try {
+      const sessionId = checkoutSession.metadata?.sessionId;
+      if (!sessionId) {
+        this.logger.warn('Session ID não encontrado no metadata do checkout');
+        return;
+      }
+
+      await this.updateSession(sessionId, {
+        status: 'completed',
+        current_step: 'confirmation',
+        stripe_checkout_session_id: checkoutSession.id,
+        completed_at: new Date().toISOString()
+      });
+
+      this.logger.log(`Sessão de upgrade completada: ${sessionId}`);
+    } catch (error) {
+      this.logger.error('Erro ao processar checkout completado:', error);
+    }
+  }
+
+  /**
+   * Processa checkout expirado
+   */
+  private async handleCheckoutExpired(checkoutSession: any): Promise<void> {
+    try {
+      const sessionId = checkoutSession.metadata?.sessionId;
+      if (!sessionId) {
+        this.logger.warn('Session ID não encontrado no metadata do checkout expirado');
+        return;
+      }
+
+      await this.updateSession(sessionId, {
+        status: 'expired',
+        current_step: 'expired'
+      });
+
+      this.logger.log(`Sessão de upgrade expirada: ${sessionId}`);
+    } catch (error) {
+      this.logger.error('Erro ao processar checkout expirado:', error);
+    }
+  }
+
+  /**
+   * Processa pagamento bem-sucedido
+   */
+  private async handlePaymentSucceeded(invoice: any): Promise<void> {
+    try {
+      const sessionId = invoice.metadata?.sessionId;
+      if (!sessionId) {
+        this.logger.warn('Session ID não encontrado no metadata da invoice');
+        return;
+      }
+
+      await this.updateSession(sessionId, {
+        status: 'payment_confirmed',
+        payment_confirmed_at: new Date().toISOString()
+      });
+
+      this.logger.log(`Pagamento confirmado para sessão: ${sessionId}`);
+    } catch (error) {
+      this.logger.error('Erro ao processar pagamento bem-sucedido:', error);
+    }
+  }
+
+  /**
+   * Processa pagamento falhado
+   */
+  private async handlePaymentFailed(invoice: any): Promise<void> {
+    try {
+      const sessionId = invoice.metadata?.sessionId;
+      if (!sessionId) {
+        this.logger.warn('Session ID não encontrado no metadata da invoice falhada');
+        return;
+      }
+
+      await this.updateSession(sessionId, {
+        status: 'payment_failed',
+        payment_failed_at: new Date().toISOString()
+      });
+
+      this.logger.log(`Pagamento falhado para sessão: ${sessionId}`);
+    } catch (error) {
+      this.logger.error('Erro ao processar pagamento falhado:', error);
+    }
+  }
+
+  /**
+   * Gera mensagem de upgrade com Stripe Checkout
+   */
+  async generateUpgradeMessage(
+    planName: string,
+    billingCycle: 'monthly' | 'yearly',
+    phoneNumber: string
+  ): Promise<string> {
+    try {
+      // Detectar jurisdição
+      const jurisdictionInfo = this.jurisdictionService.detectJurisdiction(phoneNumber);
+      const jurisdiction = jurisdictionInfo.jurisdiction;
+
+      // Buscar plano
+      const plan = await this.plansService.getPlanByName(planName);
+      if (!plan) {
+        throw new Error(`Plano ${planName} não encontrado`);
+      }
+
+      const amount = billingCycle === 'monthly' ? plan.monthly_price : plan.yearly_price;
+      const discount = billingCycle === 'yearly' && plan.yearly_price < (plan.monthly_price * 12)
+        ? ` (${Math.round(((plan.monthly_price * 12 - plan.yearly_price) / (plan.monthly_price * 12)) * 100)}% de desconto)`
+        : '';
+
+      return `🚀 **Upgrade para ${planName.toUpperCase()} ${billingCycle === 'monthly' ? 'Mensal' : 'Anual'}${discount}**
+
+💰 **Valor:** R$ ${amount.toFixed(2)}/${billingCycle === 'monthly' ? 'mês' : 'ano'}
+
+📋 **Funcionalidades incluídas:**
+${plan.features.map(feature => `• ${feature}`).join('\n')}
+
+💳 **Pagamento seguro via Stripe**
+Clique no link abaixo para finalizar seu upgrade:
+
+*Link será gerado após confirmação*`;
+    } catch (error) {
+      this.logger.error('Erro ao gerar mensagem de upgrade:', error);
+      return `🚀 **Upgrade para ${planName.toUpperCase()} ${billingCycle === 'monthly' ? 'Mensal' : 'Anual'}**
+
+💰 **Valor:** R$ ${billingCycle === 'monthly' ? 'Mensal' : 'Anual'}
+
+💳 **Pagamento seguro via Stripe**
+Clique no link abaixo para finalizar seu upgrade:
+
+*Link será gerado após confirmação*`;
     }
   }
 

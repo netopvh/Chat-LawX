@@ -6,6 +6,10 @@ import * as Tesseract from 'tesseract.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as sharp from 'sharp';
+import { LegalPromptsService } from '../legal-prompts/legal-prompts.service';
+import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
+import { TeamsService } from '../teams/teams.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 export interface ExtractedData {
   amount: number;
@@ -49,7 +53,13 @@ export class AiService {
   private gemini: GoogleGenerativeAI;
   private openai: OpenAI;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private legalPromptsService: LegalPromptsService,
+    private jurisdictionService: JurisdictionService,
+    private teamsService: TeamsService,
+    private prismaService: PrismaService,
+  ) {
     this.gemini = new GoogleGenerativeAI(this.configService.get('GEMINI_API_KEY'));
     this.openai = new OpenAI({
       apiKey: this.configService.get('OPENAI_API_KEY'),
@@ -2588,6 +2598,392 @@ Seja preciso e extraia apenas informações claramente presentes na transcriçã
       
     } catch (error) {
       this.logger.error('❌ Erro ao extrair informações manualmente:', error);
+      throw error;
+    }
+  }
+
+  // ===== NOVOS MÉTODOS PARA CHAT LAWX =====
+
+  /**
+   * Gera resposta jurídica baseada na jurisdição e tipo de consulta
+   */
+  async generateLegalResponse(
+    message: string, 
+    phoneNumber: string, 
+    userId?: string,
+    documentContent?: string
+  ): Promise<string> {
+    try {
+      // Detectar jurisdição baseada no número de telefone
+      const jurisdiction = this.jurisdictionService.detectJurisdiction(phoneNumber);
+      this.logger.log(`Jurisdição detectada: ${jurisdiction.jurisdiction} para ${phoneNumber}`);
+
+      // Validar limites de uso
+      await this.validateUsageLimits(jurisdiction.jurisdiction, userId);
+
+      // Determinar tipo de consulta jurídica
+      const legalIntent = await this.detectLegalIntent(message, documentContent);
+      this.logger.log(`Intent jurídico detectado: ${legalIntent.type}`);
+
+      // Executar prompt jurídico apropriado
+      const response = await this.executeLegalPrompt(
+        legalIntent.type,
+        jurisdiction.jurisdiction,
+        {
+          message,
+          documentContent,
+          jurisdiction: jurisdiction.jurisdiction,
+          userId,
+        }
+      );
+
+      // Contabilizar mensagem enviada
+      await this.incrementMessageCount(jurisdiction.jurisdiction, userId);
+
+      return response;
+    } catch (error) {
+      this.logger.error('Erro ao gerar resposta jurídica:', error);
+      return 'Desculpe, não consegui processar sua consulta jurídica. Pode tentar novamente?';
+    }
+  }
+
+  /**
+   * Detecta o tipo de consulta jurídica
+   */
+  private async detectLegalIntent(message: string, documentContent?: string): Promise<{
+    type: string;
+    confidence: number;
+    reasoning: string;
+  }> {
+    try {
+      const prompt = `Analise a seguinte mensagem e determine o tipo de consulta jurídica.
+
+Mensagem: "${message}"
+${documentContent ? `\nConteúdo do documento: "${documentContent}"` : ''}
+
+Responda APENAS em JSON:
+{
+  "type": "contract_analysis|contract_drafting|petition_drafting|legal_opinion|consultation|document_review|clause_suggestion|risk_analysis|jurisprudence_search|legal_research",
+  "confidence": 0.0-1.0,
+  "reasoning": "explicação da análise"
+}
+
+Tipos de consulta:
+- contract_analysis: Análise de contratos
+- contract_drafting: Elaboração de contratos
+- petition_drafting: Elaboração de petições
+- legal_opinion: Parecer jurídico
+- consultation: Consulta jurídica geral
+- document_review: Revisão de documentos
+- clause_suggestion: Sugestão de cláusulas
+- risk_analysis: Análise de riscos
+- jurisprudence_search: Busca de jurisprudência
+- legal_research: Pesquisa jurídica`;
+
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: 'Você é um especialista em classificar consultas jurídicas. Seja preciso e consistente.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.1,
+      });
+
+      const responseText = completion.choices[0]?.message?.content;
+      if (responseText) {
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const result = JSON.parse(jsonMatch[0]);
+          this.logger.log('Intent jurídico detectado:', result);
+          return result;
+        }
+      }
+
+      // Fallback
+      return {
+        type: 'consultation',
+        confidence: 0.5,
+        reasoning: 'análise padrão - resposta não reconhecida'
+      };
+    } catch (error) {
+      this.logger.error('Erro ao detectar intent jurídico:', error);
+      return {
+        type: 'consultation',
+        confidence: 0.3,
+        reasoning: 'erro na análise - usando fallback'
+      };
+    }
+  }
+
+  /**
+   * Executa prompt jurídico específico
+   */
+  private async executeLegalPrompt(
+    promptType: string,
+    jurisdiction: string,
+    context: {
+      message: string;
+      documentContent?: string;
+      jurisdiction: string;
+      userId?: string;
+    }
+  ): Promise<string> {
+    try {
+      // Buscar prompt específico para a jurisdição
+      const prompts = this.legalPromptsService.searchPrompts({
+        type: promptType as any,
+        jurisdiction,
+        isActive: true,
+        limit: 1
+      });
+
+      if (prompts.length === 0) {
+        // Usar prompt genérico se não encontrar específico
+        return await this.generateGenericLegalResponse(context.message, jurisdiction);
+      }
+
+      const prompt = prompts[0];
+      
+      // Preparar variáveis para o prompt
+      const variables = {
+        message: context.message,
+        document_content: context.documentContent || '',
+        jurisdiction: context.jurisdiction,
+        user_id: context.userId || '',
+      };
+
+      // Executar prompt
+      const processedPrompt = this.legalPromptsService.executePrompt({
+        promptId: prompt.id,
+        variables,
+        jurisdiction,
+        userId: context.userId || '',
+      });
+
+      // Gerar resposta com IA
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `Você é um assistente jurídico especializado em ${jurisdiction}. Seja preciso, profissional e útil.`
+          },
+          {
+            role: 'user',
+            content: processedPrompt
+          }
+        ],
+        temperature: 0.3,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      if (response) {
+        this.logger.log('Resposta jurídica gerada com sucesso');
+        return response;
+      }
+
+      throw new Error('Resposta vazia da IA');
+    } catch (error) {
+      this.logger.error('Erro ao executar prompt jurídico:', error);
+      return await this.generateGenericLegalResponse(context.message, jurisdiction);
+    }
+  }
+
+  /**
+   * Gera resposta jurídica genérica quando não há prompt específico
+   */
+  private async generateGenericLegalResponse(message: string, jurisdiction: string): Promise<string> {
+    const prompt = `Você é um assistente jurídico especializado em ${jurisdiction}. 
+    
+Responda à seguinte consulta de forma profissional e útil:
+
+"${message}"
+
+Forneça uma resposta jurídica adequada, considerando a legislação de ${jurisdiction}.
+Seja claro, objetivo e sempre mencione que é importante consultar um advogado para casos específicos.`;
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `Você é um assistente jurídico especializado em ${jurisdiction}. Seja profissional e útil.`
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.3,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      return response || 'Desculpe, não consegui processar sua consulta jurídica.';
+    } catch (error) {
+      this.logger.error('Erro ao gerar resposta jurídica genérica:', error);
+      return 'Desculpe, não consegui processar sua consulta jurídica. Pode reformular sua pergunta?';
+    }
+  }
+
+  /**
+   * Valida limites de uso baseado na jurisdição
+   */
+  private async validateUsageLimits(jurisdiction: string, userId?: string): Promise<void> {
+    try {
+      const limitControlType = this.jurisdictionService.getLimitControlType(jurisdiction);
+      
+      if (limitControlType === 'teams' && userId) {
+        // Para Brasil - validar via Supabase teams
+        const validation = await this.teamsService.validateTeamLimit(userId);
+        if (!validation.canSendMessage) {
+          throw new Error(`Limite de mensagens atingido. Você usou ${validation.currentUsage} de ${validation.limit} mensagens permitidas.`);
+        }
+      } else if (limitControlType === 'local' && userId) {
+        // Para Portugal/Espanha - validar via Prisma
+        const user = await this.prismaService.findUserByPhone(userId);
+        if (user && user.messagesCount >= 100) { // Limite padrão para PT/ES
+          throw new Error('Limite de mensagens atingido. Entre em contato para upgrade do seu plano.');
+        }
+      }
+    } catch (error) {
+      this.logger.error('Erro ao validar limites de uso:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Incrementa contador de mensagens baseado na jurisdição
+   */
+  private async incrementMessageCount(jurisdiction: string, userId?: string): Promise<void> {
+    try {
+      const limitControlType = this.jurisdictionService.getLimitControlType(jurisdiction);
+      
+      if (limitControlType === 'teams' && userId) {
+        // Para Brasil - incrementar via Supabase teams
+        await this.teamsService.incrementTeamUsage(userId);
+      } else if (limitControlType === 'local' && userId) {
+        // Para Portugal/Espanha - incrementar via Prisma
+        await this.prismaService.incrementUserMessages(userId);
+      }
+    } catch (error) {
+      this.logger.error('Erro ao incrementar contador de mensagens:', error);
+      // Não lançar erro para não interromper o fluxo
+    }
+  }
+
+  /**
+   * Analisa documento jurídico (imagem ou texto)
+   */
+  async analyzeLegalDocument(
+    content: string | Buffer,
+    jurisdiction: string,
+    userId?: string
+  ): Promise<{
+    analysis: string;
+    type: string;
+    risks: string[];
+    suggestions: string[];
+  }> {
+    try {
+      // Validar limites
+      await this.validateUsageLimits(jurisdiction, userId);
+
+      let documentText = '';
+      
+      if (Buffer.isBuffer(content)) {
+        // Se for imagem, extrair texto com OCR
+        documentText = await this.extractTextFromImage(content);
+      } else {
+        documentText = content;
+      }
+
+      // Analisar documento com IA
+      const analysis = await this.performLegalDocumentAnalysis(documentText, jurisdiction);
+      
+      // Incrementar contador
+      await this.incrementMessageCount(jurisdiction, userId);
+
+      return analysis;
+    } catch (error) {
+      this.logger.error('Erro ao analisar documento jurídico:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Extrai texto de imagem usando OCR
+   */
+  private async extractTextFromImage(imageBuffer: Buffer): Promise<string> {
+    try {
+      const { data: { text } } = await Tesseract.recognize(imageBuffer, 'por');
+      return text;
+    } catch (error) {
+      this.logger.error('Erro no OCR:', error);
+      throw new Error('Não foi possível extrair texto da imagem');
+    }
+  }
+
+  /**
+   * Realiza análise jurídica do documento
+   */
+  private async performLegalDocumentAnalysis(
+    documentText: string,
+    jurisdiction: string
+  ): Promise<{
+    analysis: string;
+    type: string;
+    risks: string[];
+    suggestions: string[];
+  }> {
+    const prompt = `Analise o seguinte documento jurídico considerando a legislação de ${jurisdiction}:
+
+"${documentText}"
+
+Forneça uma análise estruturada em JSON:
+{
+  "analysis": "análise detalhada do documento",
+  "type": "tipo de documento (contrato, petição, parecer, etc.)",
+  "risks": ["risco 1", "risco 2", "risco 3"],
+  "suggestions": ["sugestão 1", "sugestão 2", "sugestão 3"]
+}
+
+Seja específico e prático nas recomendações.`;
+
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `Você é um especialista em análise de documentos jurídicos para ${jurisdiction}. Seja preciso e prático.`
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.2,
+      });
+
+      const responseText = completion.choices[0]?.message?.content;
+      if (responseText) {
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const result = JSON.parse(jsonMatch[0]);
+          return result;
+        }
+      }
+
+      throw new Error('Resposta inválida da IA');
+    } catch (error) {
+      this.logger.error('Erro na análise jurídica:', error);
       throw error;
     }
   }

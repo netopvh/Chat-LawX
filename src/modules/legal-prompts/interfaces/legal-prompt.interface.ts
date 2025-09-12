@@ -5,7 +5,7 @@ export interface LegalPrompt {
   title: string;
   description: string;
   prompt: string;
-  variables: string[];
+  variables: PromptVariable[];
   version: string;
   isActive: boolean;
   createdAt: string;

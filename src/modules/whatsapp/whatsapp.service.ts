@@ -2,16 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { UsersService, User } from '../users/users.service';
-import { ExpensesService } from '../expenses/expenses.service';
-import { RevenuesService } from '../revenues/revenues.service'; // NOVO
 import { AiService } from '../ai/ai.service';
 import { UsageService } from '../usage/usage.service';
 import { UploadService } from '../upload/upload.service';
-import { MercadoPagoService } from '../mercadopago/mercadopago.service';
+import { StripeService } from '../stripe/stripe.service';
 import { UpgradeSessionsService } from '../upgrade-sessions/upgrade-sessions.service';
 import { PlansService } from '../plans/plans.service';
+import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
+import { TeamsService } from '../teams/teams.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { WebhookDto } from './dto/webhook.dto';
-import { ExtractedData } from '../ai/ai.service';
 
 interface ConversationState {
   isWaitingForName: boolean;
@@ -20,27 +20,19 @@ interface ConversationState {
   upgradeStep: 'introduction' | 'plan_selection' | 'frequency_selection' | 'payment_info' | 'confirmation';
   selectedPlan?: string;
   selectedFrequency?: 'monthly' | 'yearly';
-  pendingExpense?: any;
+  pendingDocument?: any;
+  jurisdiction?: string;
+  ddi?: string;
 }
 
-interface Expense {
+interface LegalDocument {
   id: string;
   user_id: string;
-  amount: number;
-  description: string;
-  category: string;
-  date: string;
-  image_url: string;
-  original_amount?: number;
-  discount_amount?: number;
-  payment_method?: string;
-  store_name?: string;
-  store_cnpj?: string;
-  store_address?: string;
-  document_type?: string;
-  document_number?: string;
+  type: string;
+  content: string;
+  analysis?: string;
+  jurisdiction: string;
   created_at: string;
-  updated_at: string;
 }
 
 @Injectable()
@@ -51,14 +43,15 @@ export class WhatsAppService {
   constructor(
     private configService: ConfigService,
     private aiService: AiService,
-    private expensesService: ExpensesService,
-    private revenuesService: RevenuesService, // NOVO
     private usageService: UsageService,
     private uploadService: UploadService,
     private usersService: UsersService,
     private upgradeSessionsService: UpgradeSessionsService,
     private plansService: PlansService,
-    private mercadoPagoService: MercadoPagoService, // Adicionado de volta
+    private stripeService: StripeService,
+    private jurisdictionService: JurisdictionService,
+    private teamsService: TeamsService,
+    private prismaService: PrismaService,
   ) {}
 
   // Métodos auxiliares para buscar planos dinamicamente
@@ -99,14 +92,22 @@ export class WhatsAppService {
     }
   }
 
-  private async getPlanLimits(planName: string): Promise<string> {
+  private async getPlanLimits(planName: string, jurisdiction: string): Promise<string> {
     try {
       const plan = await this.plansService.getPlanByName(planName);
       
       if (plan.is_unlimited) {
-        return '• Despesas ilimitadas\n• Relatórios ilimitados\n• Mensagens ilimitadas';
+        return '• Consultas jurídicas ilimitadas\n• Análise de documentos ilimitada\n• Mensagens ilimitadas';
       } else {
-        return `• ${plan.expense_limit} despesas por mês\n• ${plan.report_limit} relatórios por mês\n• ${plan.message_limit} mensagens por mês`;
+        const limitControlType = this.jurisdictionService.getLimitControlType(jurisdiction);
+        
+        if (limitControlType === 'teams') {
+          // Para Brasil - limites controlados via Supabase teams
+          return `• Consultas jurídicas controladas via sistema\n• Análise de documentos controlada via sistema\n• Mensagens controladas via sistema`;
+        } else {
+          // Para Portugal/Espanha - limites locais
+          return `• ${plan.consultation_limit} consultas por mês\n• Análise de documentos incluída\n• Mensagens ilimitadas`;
+        }
       }
     } catch (error) {
       this.logger.error(`Erro ao buscar limites do plano ${planName}:`, error);
@@ -177,7 +178,18 @@ export class WhatsAppService {
         return;
       }
 
-      const user: User = await this.usersService.getOrCreateUser(phone);
+      // Detectar jurisdição baseada no número de telefone
+      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      this.logger.log(`Jurisdição detectada: ${jurisdiction.jurisdiction} para ${phone}`);
+
+      // Verificar se é usuário brasileiro (já cadastrado no Supabase)
+      const isBrazilianUser = jurisdiction.jurisdiction === 'BR';
+      
+      let user: User | null = null;
+      if (!isBrazilianUser) {
+        // Para Portugal/Espanha, criar ou buscar usuário local
+        user = await this.usersService.getOrCreateUser(phone);
+      }
       
       const state = this.getConversationState(phone);
       this.logger.log('💬 Estado da conversa:', JSON.stringify(state, null, 2));
@@ -185,16 +197,16 @@ export class WhatsAppService {
       // Extrair texto da mensagem
       const text = message.message?.conversation || '';
 
-      // Verificar se usuário não está registrado e gerenciar fluxo de cadastro
-      if (!user.is_registered) {
+      // Verificar se usuário não está registrado (apenas para PT/ES)
+      if (!isBrazilianUser && user && !user.is_registered) {
         
         if (state.isWaitingForName) {
           await this.usersService.registerUser(phone, text);
-          const response = `Olá ${text}! Fizemos seu cadastro inicial, agora vamos começar a controlar suas finanças.\n\nPara isso, você pode me enviar fotos dos seus comprovantes para eu registrar suas receitas e despesas.`;
+          const response = `Olá ${text}! Fizemos seu cadastro inicial, agora vamos começar a ajudá-lo com suas consultas jurídicas.\n\nPara isso, você pode me enviar documentos jurídicos ou fazer perguntas sobre direito.`;
           await this.sendMessage(phone, response);
           this.clearConversationState(phone);
         } else {
-          const response = 'Olá! Seja bem vindo ao Me Poupe Bot.\nAqui iremos te ajudar a controlar suas finanças e economizar.\nMas antes, qual é o seu nome?';
+          const response = 'Olá! Seja bem vindo ao Chat LawX.\nAqui iremos te ajudar com suas consultas jurídicas.\nMas antes, qual é o seu nome?';
           await this.sendMessage(phone, response);
           this.setConversationState(phone, { 
             isWaitingForName: true, 
@@ -227,9 +239,9 @@ export class WhatsAppService {
     }
   }
 
-  private async handleImageMessage(message: any, user: User, phone: string): Promise<void> {
+  private async handleImageMessage(message: any, user: User | null, phone: string): Promise<void> {
     try {
-      this.logger.log('📸 Processando mensagem de imagem...');
+      this.logger.log('📸 Processando mensagem de imagem jurídica...');
       
       // Download da imagem
       const imageBuffer = await this.downloadImage(message);
@@ -238,41 +250,68 @@ export class WhatsAppService {
         return;
       }
 
-      await this.sendMessage(phone, '🔍 Estou analisando a imagem...');
-      // Extrair dados da imagem (inclui classificação automática)
-      const extractedData = await this.aiService.extractDataFromImage(imageBuffer);
+      await this.sendMessage(phone, '🔍 Estou analisando o documento jurídico...');
       
-      // Verificar limites baseado na classificação
-      if (extractedData.document_classification === 'revenue') {
-        // Verificar limite de receitas
-        const revenueLimits = await this.usageService.checkLimits(user.id, 'revenue');
-        if (!revenueLimits.allowed) {
-          await this.sendMessage(phone, revenueLimits.message);
-          await this.sendMessage(phone, 'Qual o plano atenderia suas necessidades nesse momento?');
-          return;
-        }
-        await this.handleRevenueImage(extractedData, user, phone, imageBuffer);
-      } else {
-        // Verificar limite de despesas
-        const expenseLimits = await this.usageService.checkLimits(user.id, 'expense');
-        if (!expenseLimits.allowed) {
-          await this.sendMessage(phone, expenseLimits.message);
-          await this.sendMessage(phone, 'Qual o plano atenderia suas necessidades nesse momento?');
-          return;
-        }
-        await this.handleExpenseImage(extractedData, user, phone, imageBuffer);
-      }
+      // Detectar jurisdição
+      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      
+      // Analisar documento jurídico
+      const analysis = await this.aiService.analyzeLegalDocument(
+        imageBuffer,
+        jurisdiction.jurisdiction,
+        user?.id
+      );
+      
+      // Salvar documento no banco de dados apropriado
+      await this.saveLegalDocument(analysis, jurisdiction.jurisdiction, user?.id);
+      
+      // Enviar resposta com análise
+      const response = `📋 **Análise do Documento Jurídico**\n\n` +
+        `**Tipo:** ${analysis.type}\n\n` +
+        `**Análise:**\n${analysis.analysis}\n\n` +
+        `**Riscos Identificados:**\n${analysis.risks.map(risk => `• ${risk}`).join('\n')}\n\n` +
+        `**Sugestões:**\n${analysis.suggestions.map(suggestion => `• ${suggestion}`).join('\n')}\n\n` +
+        `⚠️ *Esta análise é informativa. Para casos específicos, consulte um advogado.*`;
+      
+      await this.sendMessage(phone, response);
       
     } catch (error) {
-      this.logger.error('❌ Erro ao processar imagem:', error);
-      
-      // Verificar se é erro de validação específico
-      if (error.message.includes('Imagem inválida:')) {
-        await this.sendMessage(phone, `❌ ${error.message}\n\n📸 **Envie uma imagem válida:**\n• Comprovante de compra\n• Nota fiscal\n• Boleto pago\n• Holerite/salário\n• Comprovante de recebimento\n\nCertifique-se de que a imagem está nítida e legível.`);
-        return;
+      this.logger.error('Erro ao processar imagem jurídica:', error);
+      await this.sendMessage(phone, '❌ Erro ao analisar o documento. Tente novamente ou envie uma imagem mais clara.');
+    }
+  }
+
+  /**
+   * Salva documento jurídico no banco de dados apropriado
+   */
+  private async saveLegalDocument(
+    analysis: any,
+    jurisdiction: string,
+    userId?: string
+  ): Promise<void> {
+    try {
+      if (jurisdiction === 'BR') {
+        // Para Brasil - salvar no Supabase (via teams service)
+        await this.teamsService.saveLegalDocument({
+          userId: userId || '',
+          type: analysis.type,
+          content: analysis.analysis,
+          analysis: analysis.analysis,
+          jurisdiction,
+        });
+      } else {
+        // Para Portugal/Espanha - salvar no MySQL local
+        await this.prismaService.createLegalDocument({
+          userId: userId || '',
+          type: analysis.type,
+          content: analysis.analysis,
+          analysis: analysis.analysis,
+          jurisdiction,
+        });
       }
-      
-      await this.sendMessage(phone, '❌ Erro ao processar a imagem. Tente novamente ou envie uma imagem mais nítida.');
+    } catch (error) {
+      this.logger.error('Erro ao salvar documento jurídico:', error);
+      // Não lançar erro para não interromper o fluxo
     }
   }
 
@@ -358,55 +397,85 @@ export class WhatsAppService {
     }
   }
 
-  private async handleTextMessage(text: string, user: User, phone: string, state: ConversationState): Promise<void> {
+  private async handleTextMessage(text: string, user: User | null, phone: string, state: ConversationState): Promise<void> {
     try {
-      this.logger.log('📝 Processando mensagem de texto:', text);
+      this.logger.log('📝 Processando mensagem de texto jurídica:', text);
 
       // 0. Verificar se é comando "menu"
       if (text.toLowerCase().trim() === 'menu') {
-        await this.showMenu(phone);
+        await this.showLegalMenu(phone);
         return;
       }
 
       // 1. Verificar se há sessão de upgrade ativa ou estado de upgrade
-      const activeSession = await this.upgradeSessionsService.getActiveSession(user.id);
-      if (activeSession || state.isInUpgradeFlow) {
-        this.logger.log('🔄 Sessão de upgrade ativa, processando com IA...');
-        await this.processUpgradeFlowWithAI(phone, user.id, text, activeSession, state);
-        return;
+      if (user) {
+        const activeSession = await this.upgradeSessionsService.getActiveSession(user.id);
+        if (activeSession || state.isInUpgradeFlow) {
+          this.logger.log('🔄 Sessão de upgrade ativa, processando com IA...');
+          await this.processUpgradeFlowWithAI(phone, user.id, text, activeSession, state);
+          return;
+        }
+
+        // 2. Verificar se é uma nova intenção de upgrade
+        const upgradeIntent = await this.detectUpgradeIntent(text, user.id);
+        if (upgradeIntent.isUpgradeIntent) {
+          this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
+          await this.handleUpgradeFlow(phone, user.id, text);
+          return;
+        }
       }
 
-      // 2. Verificar se é uma nova intenção de upgrade
-      const upgradeIntent = await this.detectUpgradeIntent(text, user.id);
-      if (upgradeIntent.isUpgradeIntent) {
-        this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
-        await this.handleUpgradeFlow(phone, user.id, text);
-        return;
-      }
-
-      // 3. Verificar se é uma solicitação de relatório financeiro
-      const reportIntent = await this.detectReportIntent(text);
-      if (reportIntent) {
-        await this.handleReportRedirect(phone, reportIntent);
-        return;
-      }
-
-      // 4. Verificar se é um lançamento financeiro
-      const financialEntry = await this.aiService.detectFinancialEntry(text);
-      
-      if (financialEntry.isFinancialEntry && financialEntry.confidence > 0.7) {
-        await this.handleFinancialEntry(text, user, phone, financialEntry);
-        return;
-      }
-
-      // 5. Se não for nenhum dos casos acima, tratar como conversa normal
-      const response = await this.aiService.generateResponse(text, user);
-      await this.sendMessage(phone, response);
+      // 3. Processar consulta jurídica
+      await this.handleLegalConsultation(text, phone, user);
 
     } catch (error) {
       this.logger.error('❌ Erro ao processar mensagem de texto:', error);
       await this.sendMessage(phone, '❌ Erro ao processar sua mensagem. Tente novamente.');
     }
+  }
+
+  /**
+   * Processa consulta jurídica
+   */
+  private async handleLegalConsultation(text: string, phone: string, user: User | null): Promise<void> {
+    try {
+      // Detectar jurisdição
+      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      
+      // Gerar resposta jurídica
+      const response = await this.aiService.generateLegalResponse(
+        text,
+        phone,
+        user?.id,
+        undefined // Sem conteúdo de documento
+      );
+      
+      await this.sendMessage(phone, response);
+      
+    } catch (error) {
+      this.logger.error('Erro ao processar consulta jurídica:', error);
+      await this.sendMessage(phone, '❌ Erro ao processar sua consulta jurídica. Tente novamente.');
+    }
+  }
+
+  /**
+   * Mostra menu jurídico
+   */
+  private async showLegalMenu(phone: string): Promise<void> {
+    const menu = `⚖️ **Chat LawX - Menu Jurídico**\n\n` +
+      `📋 **Funcionalidades Disponíveis:**\n` +
+      `• Envie documentos jurídicos (contratos, petições, etc.)\n` +
+      `• Faça consultas jurídicas por texto\n` +
+      `• Análise de riscos em documentos\n` +
+      `• Sugestões de cláusulas contratuais\n` +
+      `• Pesquisa de jurisprudência\n\n` +
+      `💡 **Como usar:**\n` +
+      `• Digite sua pergunta jurídica\n` +
+      `• Envie foto de documento para análise\n` +
+      `• Use "upgrade" para ver planos premium\n\n` +
+      `⚠️ *Lembre-se: Este é um assistente informativo. Para casos específicos, consulte um advogado.*`;
+    
+    await this.sendMessage(phone, menu);
   }
 
   private async handleFinancialEntry(text: string, user: User, phone: string, financialEntry: any): Promise<void> {

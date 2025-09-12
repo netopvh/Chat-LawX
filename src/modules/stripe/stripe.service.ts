@@ -156,4 +156,100 @@ export class StripeService {
       throw error;
     }
   }
+
+  // ===== MÉTODOS ESPECÍFICOS PARA CHAT LAWX =====
+
+  /**
+   * Cria sessão de checkout simplificada (método usado pelo UpgradeSessionsService)
+   */
+  async createCheckoutSession(data: {
+    priceId: string;
+    customerEmail?: string;
+    metadata?: Record<string, string>;
+  }): Promise<string> {
+    try {
+      const session = await this.stripe.checkout.sessions.create({
+        customer_email: data.customerEmail,
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            price: data.priceId,
+            quantity: 1,
+          },
+        ],
+        mode: 'subscription',
+        success_url: `${this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000'}/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000'}/cancel`,
+        metadata: data.metadata,
+      });
+
+      this.logger.log(`Sessão de checkout criada: ${session.id}`);
+      return session.url || '';
+    } catch (error) {
+      this.logger.error('Erro ao criar sessão de checkout:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Busca sessão de checkout por ID
+   */
+  async getCheckoutSession(sessionId: string): Promise<StripeCheckoutSession> {
+    try {
+      const session = await this.stripe.checkout.sessions.retrieve(sessionId);
+      return session as StripeCheckoutSession;
+    } catch (error) {
+      this.logger.error(`Erro ao buscar sessão de checkout ${sessionId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Lista produtos ativos
+   */
+  async listActiveProducts(): Promise<StripeProduct[]> {
+    try {
+      const products = await this.stripe.products.list({
+        active: true,
+        limit: 100,
+      });
+
+      return products.data as StripeProduct[];
+    } catch (error) {
+      this.logger.error('Erro ao listar produtos ativos:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Lista preços de um produto
+   */
+  async listProductPrices(productId: string): Promise<StripePrice[]> {
+    try {
+      const prices = await this.stripe.prices.list({
+        product: productId,
+        active: true,
+        limit: 100,
+      });
+
+      return prices.data as StripePrice[];
+    } catch (error) {
+      this.logger.error(`Erro ao listar preços do produto ${productId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Atualiza cliente
+   */
+  async updateCustomer(customerId: string, data: Partial<CreateCustomerDto>): Promise<StripeCustomer> {
+    try {
+      const customer = await this.stripe.customers.update(customerId, data);
+      this.logger.log(`Cliente atualizado: ${customerId}`);
+      return customer as StripeCustomer;
+    } catch (error) {
+      this.logger.error(`Erro ao atualizar cliente ${customerId}:`, error);
+      throw error;
+    }
+  }
 }

@@ -335,21 +335,23 @@ export class UsersService {
   private async getBrazilianUser(phone: string, jurisdiction: any): Promise<User> {
     try {
       // Buscar no Supabase teams
-      const teamUser = await this.teamsService.findUserByPhone(phone);
+      // TODO: Implementar busca de usuário no Supabase teams
+      // const teamUser = await this.teamsService.findUserByPhone(phone);
       
-      if (teamUser) {
-        return {
-          id: teamUser.id,
-          phone: teamUser.phone,
-          name: teamUser.name || '',
-          is_registered: true,
-          jurisdiction: jurisdiction.jurisdiction,
-          ddi: jurisdiction.ddi,
-          team_id: teamUser.team_id,
-          created_at: teamUser.created_at,
-          updated_at: teamUser.updated_at,
-        };
-      }
+      // TODO: Implementar retorno de usuário brasileiro
+      // if (teamUser) {
+      //   return {
+      //     id: teamUser.id,
+      //     phone: teamUser.phone,
+      //     name: teamUser.name || '',
+      //     is_registered: true,
+      //     jurisdiction: jurisdiction.jurisdiction,
+      //     ddi: jurisdiction.ddi,
+      //     team_id: teamUser.team_id,
+      //     created_at: teamUser.created_at,
+      //     updated_at: teamUser.updated_at,
+      //   };
+      // }
       
       // Se não encontrou, criar usuário básico
       const { data, error } = await this.supabaseService.getClient()

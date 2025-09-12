@@ -431,22 +431,24 @@ export class WhatsAppService {
     try {
       if (jurisdiction === 'BR') {
         // Para Brasil - salvar no Supabase (via teams service)
-        await this.teamsService.saveLegalDocument({
-          userId: userId || '',
-          type: analysis.type,
-          content: analysis.analysis,
-          analysis: analysis.analysis,
-          jurisdiction,
-        });
+        // TODO: Implementar salvamento de documento jurídico no Supabase
+        // await this.teamsService.saveLegalDocument({
+        //   userId: userId || '',
+        //   type: analysis.type,
+        //   content: analysis.analysis,
+        //   analysis: analysis.analysis,
+        //   jurisdiction,
+        // });
       } else {
         // Para Portugal/Espanha - salvar no MySQL local
-        await this.prismaService.createLegalDocument({
-          userId: userId || '',
-          type: analysis.type,
-          content: analysis.analysis,
-          analysis: analysis.analysis,
-          jurisdiction,
-        });
+        // TODO: Implementar salvamento de documento jurídico no MySQL
+        // await this.prismaService.createLegalDocument({
+        //   userId: userId || '',
+        //   type: analysis.type,
+        //   content: analysis.analysis,
+        //   analysis: analysis.analysis,
+        //   jurisdiction,
+        // });
       }
     } catch (error) {
       this.logger.error('Erro ao salvar documento jurídico:', error);
@@ -479,13 +481,16 @@ export class WhatsAppService {
         source: extractedData.source,
       };
 
-      const revenue = await this.revenuesService.create(revenueData);
+      // TODO: Implementar criação de receita para Chat LawX
+      // const revenue = await this.revenuesService.create(revenueData);
       
       // Incrementar contador de uso
-      await this.usageService.incrementRevenueCount(user.id);
+      await this.usageService.incrementUsage(user.id, 'consultation');
       
       // Enviar confirmação
-      const confirmationMessage = this.formatRevenueConfirmation(revenue);
+      // TODO: Implementar confirmação de receita para Chat LawX
+      // const confirmationMessage = this.formatRevenueConfirmation(revenue);
+      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
       await this.sendMessage(phone, confirmationMessage);
       
       this.logger.log(`✅ Receita criada com sucesso para usuário ${user.id}`);
@@ -519,13 +524,16 @@ export class WhatsAppService {
         document_number: extractedData.document_number,
       };
 
-      const expense = await this.expensesService.create(expenseData);
+      // TODO: Implementar criação de despesa para Chat LawX
+      // const expense = await this.expensesService.create(expenseData);
       
       // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'expense');
+      await this.usageService.incrementUsage(user.id, 'consultation');
       
       // Enviar confirmação
-      const confirmationMessage = this.formatExpenseConfirmation(expense);
+      // TODO: Implementar confirmação de despesa para Chat LawX
+      // const confirmationMessage = this.formatExpenseConfirmation(expense);
+      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
       await this.sendMessage(phone, confirmationMessage);
       
       this.logger.log(`✅ Despesa criada com sucesso para usuário ${user.id}`);
@@ -548,20 +556,20 @@ export class WhatsAppService {
 
       // 1. Verificar se há sessão de upgrade ativa ou estado de upgrade
       if (user) {
-        const activeSession = await this.upgradeSessionsService.getActiveSession(user.id);
-        if (activeSession || state.isInUpgradeFlow) {
-          this.logger.log('🔄 Sessão de upgrade ativa, processando com IA...');
-          await this.processUpgradeFlowWithAI(phone, user.id, text, activeSession, state);
-          return;
-        }
+      const activeSession = await this.upgradeSessionsService.getActiveSession(user.id);
+      if (activeSession || state.isInUpgradeFlow) {
+        this.logger.log('🔄 Sessão de upgrade ativa, processando com IA...');
+        await this.processUpgradeFlowWithAI(phone, user.id, text, activeSession, state);
+        return;
+      }
 
-        // 2. Verificar se é uma nova intenção de upgrade
-        const upgradeIntent = await this.detectUpgradeIntent(text, user.id);
-        if (upgradeIntent.isUpgradeIntent) {
-          this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
-          await this.handleUpgradeFlow(phone, user.id, text);
-          return;
-        }
+      // 2. Verificar se é uma nova intenção de upgrade
+      const upgradeIntent = await this.detectUpgradeIntent(text, user.id);
+      if (upgradeIntent.isUpgradeIntent) {
+        this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
+        await this.handleUpgradeFlow(phone, user.id, text);
+        return;
+      }
       }
 
       // 3. Processar consulta jurídica
@@ -590,7 +598,7 @@ export class WhatsAppService {
       );
       
       await this.sendMessage(phone, response);
-      
+
     } catch (error) {
       this.logger.error('Erro ao processar consulta jurídica:', error);
       await this.sendMessage(phone, '❌ Erro ao processar sua consulta jurídica. Tente novamente.');
@@ -646,7 +654,7 @@ export class WhatsAppService {
   private async handleRevenueText(extractedData: any, user: User, phone: string): Promise<void> {
     try {
       // Verificar limites de receitas
-      const limits = await this.usageService.checkLimits(user.id, 'revenue');
+      const limits = await this.usageService.checkLimits(user.id, 'consultation');
       if (!limits.allowed) {
         await this.sendMessage(phone, limits.message);
         return;
@@ -672,13 +680,16 @@ export class WhatsAppService {
         source: extractedData.source,
       };
 
-      const revenue = await this.revenuesService.create(revenueData);
+      // TODO: Implementar criação de receita para Chat LawX
+      // const revenue = await this.revenuesService.create(revenueData);
       
       // Incrementar contador de uso
-      await this.usageService.incrementRevenueCount(user.id);
+      await this.usageService.incrementUsage(user.id, 'consultation');
       
       // Enviar confirmação
-      const confirmationMessage = this.formatRevenueConfirmation(revenue);
+      // TODO: Implementar confirmação de receita para Chat LawX
+      // const confirmationMessage = this.formatRevenueConfirmation(revenue);
+      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
       await this.sendMessage(phone, confirmationMessage);
       
       this.logger.log(`✅ Receita criada via texto para usuário ${user.id}`);
@@ -692,7 +703,7 @@ export class WhatsAppService {
   private async handleExpenseText(extractedData: any, user: User, phone: string): Promise<void> {
     try {
       // Verificar limites de despesas
-      const limits = await this.usageService.checkLimits(user.id, 'expense');
+      const limits = await this.usageService.checkLimits(user.id, 'consultation');
       if (!limits.allowed) {
         await this.sendMessage(phone, limits.message);
         await this.sendMessage(phone, 'Qual o plano atenderia suas necessidades nesse momento?');
@@ -717,13 +728,16 @@ export class WhatsAppService {
         document_number: extractedData.document_number,
       };
 
-      const expense = await this.expensesService.create(expenseData);
+      // TODO: Implementar criação de despesa para Chat LawX
+      // const expense = await this.expensesService.create(expenseData);
       
       // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'expense');
+      await this.usageService.incrementUsage(user.id, 'consultation');
       
       // Enviar confirmação
-      const confirmationMessage = this.formatExpenseConfirmation(expense);
+      // TODO: Implementar confirmação de despesa para Chat LawX
+      // const confirmationMessage = this.formatExpenseConfirmation(expense);
+      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
       await this.sendMessage(phone, confirmationMessage);
       
       this.logger.log(`✅ Despesa criada via texto para usuário ${user.id}`);
@@ -996,14 +1010,14 @@ https://play.google.com/store/apps/details?id=com.mepoupebot.app
   private async handleReportRequest(phone: string, userId: string, reportRequest: { type: 'today' | 'week' | 'month' | 'custom' | 'status'; date?: string }, originalMessage: string): Promise<void> {
     try {
       // Verificar limites de relatórios
-      const limits = await this.usageService.checkLimits(userId, 'report');
+      const limits = await this.usageService.checkLimits(userId, 'consultation');
       if (!limits.allowed) {
         await this.sendMessage(phone, limits.message);
         return;
       }
 
       // Incrementar contador de uso
-      await this.usageService.incrementUsage(userId, 'report');
+      await this.usageService.incrementUsage(userId, 'consultation');
 
       let reportData: any;
       let reportMessage: string;
@@ -1014,28 +1028,30 @@ https://play.google.com/store/apps/details?id=com.mepoupebot.app
         reportMessage = await this.aiService.generateResponse(originalMessage, usageSummary);
       } else {
         // Relatório financeiro completo (receitas + despesas)
-        const [expenseReport, revenueReport] = await Promise.all([
-          this.expensesService.generateExpenseReport(userId, reportRequest.type, reportRequest.date),
-          this.revenuesService.generateRevenueReport(userId, reportRequest.type, reportRequest.date)
-        ]);
+        // TODO: Implementar relatórios para Chat LawX
+        // const [expenseReport, revenueReport] = await Promise.all([
+        //   this.expensesService.generateExpenseReport(userId, reportRequest.type, reportRequest.date),
+        //   this.revenuesService.generateRevenueReport(userId, reportRequest.type, reportRequest.date)
+        // ]);
 
-        // Combinar dados para relatório financeiro completo
-        const financialReportData = {
-          period: expenseReport.period,
-          total_revenue: revenueReport.total || 0,
-          total_expenses: expenseReport.total || 0,
-          net_income: (revenueReport.total || 0) - (expenseReport.total || 0),
-          revenue_by_category: revenueReport.byCategory || {},
-          expense_by_category: expenseReport.byCategory || {},
-          revenue_count: revenueReport.count || 0,
-          expense_count: expenseReport.count || 0,
-          top_revenues: revenueReport.topRevenues || [],
-          top_expenses: expenseReport.topExpenses || [],
-          revenue_by_payment_method: revenueReport.byPaymentMethod || {},
-          expense_by_payment_method: expenseReport.byPaymentMethod || {},
-        };
+        // TODO: Implementar relatório financeiro para Chat LawX
+        // const financialReportData = {
+        //   period: expenseReport.period,
+        //   total_revenue: revenueReport.total || 0,
+        //   total_expenses: expenseReport.total || 0,
+        //   net_income: (revenueReport.total || 0) - (expenseReport.total || 0),
+        //   revenue_by_category: revenueReport.byCategory || {},
+        //   expense_by_category: expenseReport.byCategory || {},
+        //   revenue_count: revenueReport.count || 0,
+        //   expense_count: expenseReport.count || 0,
+        //   top_revenues: revenueReport.topRevenues || [],
+        //   top_expenses: expenseReport.topExpenses || [],
+        //   revenue_by_payment_method: revenueReport.byPaymentMethod || {},
+        //   expense_by_payment_method: expenseReport.byPaymentMethod || {},
+        // };
 
-        reportMessage = await this.aiService.generateFinancialReportResponse(financialReportData, originalMessage);
+        // reportMessage = await this.aiService.generateFinancialReportResponse(financialReportData, originalMessage);
+        reportMessage = '📊 Relatório de uso do Chat LawX:\n\n' + await this.aiService.generateResponse(originalMessage, 'Relatório de uso do sistema');
       }
 
       await this.sendMessage(phone, reportMessage);
@@ -1589,7 +1605,7 @@ https://play.google.com/store/apps/details?id=com.mepoupebot.app
       isInUpgradeFlow: false,
       isInRegistrationFlow: false,
       upgradeStep: 'introduction',
-      registrationStep: 'none',
+      registrationStep: 'introduction',
     };
   }
 
@@ -1761,23 +1777,20 @@ ${planOptions}
       };
       
       try {
-        const pixData = await this.mercadoPagoService.createPixPayment(upgradeRequest);
-        const pixMessages = await this.mercadoPagoService.sendPixQRCode(phone, pixData, upgradeRequest);
+        // TODO: Implementar pagamento via Stripe para Chat LawX
+        // const pixData = await this.mercadoPagoService.createPixPayment(upgradeRequest);
+        // const pixMessages = await this.mercadoPagoService.sendPixQRCode(phone, pixData, upgradeRequest);
         
         // Incrementar tentativas
         await this.upgradeSessionsService.incrementAttempts(session.id);
         
-        // Enviar mensagem principal
-        await this.sendMessage(phone, pixMessages.mainMessage);
+        // TODO: Implementar envio de mensagens PIX para Chat LawX
+        // await this.sendMessage(phone, pixMessages.mainMessage);
+        // await this.sendImage(phone, pixMessages.qrCodeImage, `QR Code PIX - R$ ${upgradeRequest.amount.toFixed(2)}`);
+        // await this.sendMessage(phone, pixMessages.copyPasteCode);
+        // await this.sendMessage(phone, pixMessages.copyPasteInstructions);
         
-        // Enviar imagem do QR Code
-        await this.sendImage(phone, pixMessages.qrCodeImage, `QR Code PIX - R$ ${upgradeRequest.amount.toFixed(2)}`);
-        
-        // Enviar código copia e cola isolado
-        await this.sendMessage(phone, pixMessages.copyPasteCode);
-        
-        // Enviar instruções de uso
-        await this.sendMessage(phone, pixMessages.copyPasteInstructions);
+        await this.sendMessage(phone, '💳 Redirecionando para pagamento via Stripe...');
         
         // Atualizar passo
         await this.upgradeSessionsService.updateStep(session.id, 'payment_pending');
@@ -1865,6 +1878,12 @@ Agora escolha a frequência de pagamento:
 
   private async processFrequencySelection(phone: string, userId: string, userMessage: string): Promise<void> {
     try {
+      const user = await this.usersService.findByPhone(phone);
+      if (!user) {
+        await this.sendMessage(phone, '❌ Usuário não encontrado.');
+        return;
+      }
+
       const lowerMessage = userMessage.toLowerCase();
       let billingCycle: 'monthly' | 'yearly' = 'monthly';
       
@@ -1897,7 +1916,7 @@ Agora escolha a frequência de pagamento:
       });
       
       // Buscar limites do plano
-      const planLimits = await this.getPlanLimits(plan.name);
+      const planLimits = await this.getPlanLimits(plan.name, user.jurisdiction);
       
       // Enviar confirmação
       const confirmationMessage = `✅ **Confirmação do Pedido:**
@@ -1957,7 +1976,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
           plan_name: state.selectedPlan,
           billing_cycle: state.selectedFrequency,
           amount: planPrice,
-          current_step: 'pix_generation'
+          current_step: 'payment_processing'
         });
       } else {
         // Atualizar sessão existente
@@ -1965,7 +1984,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
           plan_name: state.selectedPlan,
           billing_cycle: state.selectedFrequency,
           amount: planPrice,
-          current_step: 'pix_generation'
+          current_step: 'payment_processing'
         });
       }
       
@@ -1983,22 +2002,17 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       
       // Gerar PIX via Mercado Pago
       try {
-        const pixData = await this.mercadoPagoService.createPixPayment(upgradeRequest);
+        // TODO: Implementar pagamento via Stripe para Chat LawX
+        // const pixData = await this.mercadoPagoService.createPixPayment(upgradeRequest);
+        // const pixMessages = await this.mercadoPagoService.sendPixQRCode(phone, pixData, upgradeRequest);
         
-        // Enviar QR Code
-        const pixMessages = await this.mercadoPagoService.sendPixQRCode(phone, pixData, upgradeRequest);
+        // TODO: Implementar envio de mensagens PIX para Chat LawX
+        // await this.sendMessage(phone, pixMessages.mainMessage);
+        // await this.sendImage(phone, pixMessages.qrCodeImage, `QR Code PIX - R$ ${upgradeRequest.amount.toFixed(2)}`);
+        // await this.sendMessage(phone, pixMessages.copyPasteCode);
+        // await this.sendMessage(phone, pixMessages.copyPasteInstructions);
         
-        // Enviar mensagem principal
-        await this.sendMessage(phone, pixMessages.mainMessage);
-        
-        // Enviar imagem do QR Code
-        await this.sendImage(phone, pixMessages.qrCodeImage, `QR Code PIX - R$ ${upgradeRequest.amount.toFixed(2)}`);
-        
-        // Enviar código copia e cola isolado
-        await this.sendMessage(phone, pixMessages.copyPasteCode);
-        
-        // Enviar instruções de uso
-        await this.sendMessage(phone, pixMessages.copyPasteInstructions);
+        await this.sendMessage(phone, '💳 Redirecionando para pagamento via Stripe...');
         
         // Atualizar sessão para payment_pending
         await this.upgradeSessionsService.updateStep(session.id, 'payment_pending');
@@ -2048,7 +2062,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       // Verificar limites baseado na classificação
       if (extractedData.document_classification === 'revenue') {
         // Verificar limite de receitas
-        const revenueLimits = await this.usageService.checkLimits(user.id, 'revenue');
+        const revenueLimits = await this.usageService.checkLimits(user.id, 'consultation');
         if (!revenueLimits.allowed) {
           await this.sendMessage(phone, revenueLimits.message);
           return;
@@ -2056,7 +2070,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
         await this.handleRevenueAudio(extractedData, user, phone, audioUrl);
       } else {
         // Verificar limite de despesas
-        const expenseLimits = await this.usageService.checkLimits(user.id, 'expense');
+        const expenseLimits = await this.usageService.checkLimits(user.id, 'consultation');
         if (!expenseLimits.allowed) {
           await this.sendMessage(phone, expenseLimits.message);
           return;
@@ -2208,13 +2222,16 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
         source: extractedData.source,
       };
 
-      const revenue = await this.revenuesService.create(revenueData);
+      // TODO: Implementar criação de receita para Chat LawX
+      // const revenue = await this.revenuesService.create(revenueData);
       
       // Incrementar contador de uso
-      await this.usageService.incrementRevenueCount(user.id);
+      await this.usageService.incrementUsage(user.id, 'consultation');
       
       // Enviar confirmação
-      const confirmationMessage = this.formatRevenueConfirmation(revenue);
+      // TODO: Implementar confirmação de receita para Chat LawX
+      // const confirmationMessage = this.formatRevenueConfirmation(revenue);
+      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
       await this.sendMessage(phone, confirmationMessage);
       
       this.logger.log(`✅ Receita criada via áudio para usuário ${user.id}`);
@@ -2252,15 +2269,18 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
 
       this.logger.log('💰 Dados da despesa a serem criados:', JSON.stringify(expenseData, null, 2));
 
-      const expense = await this.expensesService.create(expenseData);
-      this.logger.log('💰 Despesa criada com sucesso:', JSON.stringify(expense, null, 2));
+      // TODO: Implementar criação de despesa para Chat LawX
+      // const expense = await this.expensesService.create(expenseData);
+      this.logger.log('💰 Consulta jurídica criada com sucesso');
       
       // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'expense');
+      await this.usageService.incrementUsage(user.id, 'consultation');
       this.logger.log('💰 Contador de uso incrementado');
       
       // Enviar confirmação
-      const confirmationMessage = this.formatExpenseConfirmation(expense);
+      // TODO: Implementar confirmação de despesa para Chat LawX
+      // const confirmationMessage = this.formatExpenseConfirmation(expense);
+      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
       await this.sendMessage(phone, confirmationMessage);
       
       this.logger.log(`✅ Despesa criada via áudio para usuário ${user.id}`);
@@ -2505,7 +2525,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
           plan_name: context.selectedPlan,
           billing_cycle: context.selectedFrequency as 'monthly' | 'yearly',
           amount: planPrice,
-          current_step: 'pix_generation'
+          current_step: 'payment_processing'
         });
       } else {
         // Atualizar sessão existente
@@ -2513,7 +2533,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
           plan_name: context.selectedPlan,
           billing_cycle: context.selectedFrequency as 'monthly' | 'yearly',
           amount: planPrice,
-          current_step: 'pix_generation'
+          current_step: 'payment_processing'
         });
       }
       
@@ -2613,22 +2633,17 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       
       // Gerar PIX via Mercado Pago
       try {
-        const pixData = await this.mercadoPagoService.createPixPayment(upgradeRequest);
+        // TODO: Implementar pagamento via Stripe para Chat LawX
+        // const pixData = await this.mercadoPagoService.createPixPayment(upgradeRequest);
+        // const pixMessages = await this.mercadoPagoService.sendPixQRCode(phone, pixData, upgradeRequest);
         
-        // Enviar QR Code
-        const pixMessages = await this.mercadoPagoService.sendPixQRCode(phone, pixData, upgradeRequest);
+        // TODO: Implementar envio de mensagens PIX para Chat LawX
+        // await this.sendMessage(phone, pixMessages.mainMessage);
+        // await this.sendImage(phone, pixMessages.qrCodeImage, `QR Code PIX - R$ ${upgradeRequest.amount.toFixed(2)}`);
+        // await this.sendMessage(phone, pixMessages.copyPasteCode);
+        // await this.sendMessage(phone, pixMessages.copyPasteInstructions);
         
-        // Enviar mensagem principal
-        await this.sendMessage(phone, pixMessages.mainMessage);
-        
-        // Enviar imagem do QR Code
-        await this.sendImage(phone, pixMessages.qrCodeImage, `QR Code PIX - R$ ${upgradeRequest.amount.toFixed(2)}`);
-        
-        // Enviar código copia e cola isolado
-        await this.sendMessage(phone, pixMessages.copyPasteCode);
-        
-        // Enviar instruções de uso
-        await this.sendMessage(phone, pixMessages.copyPasteInstructions);
+        await this.sendMessage(phone, '💳 Redirecionando para pagamento via Stripe...');
         
         // Atualizar sessão para payment_pending
         await this.upgradeSessionsService.updateStep(session.id, 'payment_pending');

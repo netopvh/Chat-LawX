@@ -340,7 +340,10 @@ export class WhatsAppService {
       const isBrazilianUser = jurisdiction.jurisdiction === 'BR';
       
       let user: User | null = null;
-      if (!isBrazilianUser) {
+      if (isBrazilianUser) {
+        // Para usuários brasileiros, buscar no Supabase (tabela profiles)
+        user = await this.usersService.getOrCreateUser(phone);
+      } else {
         // Para Portugal/Espanha, criar ou buscar usuário local
         user = await this.usersService.getOrCreateUser(phone);
       }

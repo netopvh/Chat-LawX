@@ -310,24 +310,25 @@ export class UsersService {
    */
   private async getBrazilianUser(phone: string, jurisdiction: any): Promise<User | null> {
     try {
-      // Buscar no Supabase teams
-      // TODO: Implementar busca de usuário no Supabase teams
-      // const teamUser = await this.teamsService.findUserByPhone(phone);
+      // Buscar usuário brasileiro na tabela profiles do Supabase
+      const userProfile = await this.teamsService.findBrazilianUserByPhone(phone);
       
-      // TODO: Implementar retorno de usuário brasileiro
-      // if (teamUser) {
-      //   return {
-      //     id: teamUser.id,
-      //     phone: teamUser.phone,
-      //     name: teamUser.name || '',
-      //     is_registered: true,
-      //     jurisdiction: jurisdiction.jurisdiction,
-      //     ddi: jurisdiction.ddi,
-      //     team_id: teamUser.team_id,
-      //     created_at: teamUser.created_at,
-      //     updated_at: teamUser.updated_at,
-      //   };
-      // }
+      if (userProfile) {
+        // Buscar o team associado ao usuário
+        const team = await this.teamsService.getTeamByPhone(phone);
+        
+        return {
+          id: userProfile.id,
+          phone: phone,
+          name: userProfile.email || '', // Usar email como nome temporariamente
+          is_registered: true,
+          jurisdiction: jurisdiction.jurisdiction,
+          ddi: jurisdiction.ddi,
+          team_id: team?.id,
+          created_at: userProfile.updated_at,
+          updated_at: userProfile.updated_at,
+        };
+      }
       
       // IMPORTANTE: NÃO CRIAR usuário brasileiro automaticamente
       // Se não encontrou, retornar null para que o WhatsAppService

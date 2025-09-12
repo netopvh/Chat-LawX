@@ -334,24 +334,80 @@ export class TeamsService {
   // ===== MÉTODOS ESPECÍFICOS PARA CHAT LAWX =====
 
   /**
+   * Busca usuário brasileiro na tabela profiles do Supabase
+   */
+  async findBrazilianUserByPhone(phoneNumber: string): Promise<any | null> {
+    try {
+      // Remove o DDI (55) e caracteres não numéricos
+      const cleanPhone = phoneNumber.replace(/\D/g, '');
+      const phoneWithoutDDI = cleanPhone.startsWith('55') ? cleanPhone.substring(2) : cleanPhone;
+      
+      this.logger.log(`🔍 Buscando usuário brasileiro por telefone: ${phoneWithoutDDI}`);
+      
+      // Buscar na tabela profiles pelo campo phone
+      const { data, error } = await this.supabaseService
+        .getClient()
+        .from('profiles')
+        .select(`
+          id,
+          role,
+          email,
+          phone,
+          user_id,
+          updated_at
+        `)
+        .eq('phone', phoneWithoutDDI)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          this.logger.log(`👤 Usuário brasileiro não encontrado: ${phoneWithoutDDI}`);
+          return null;
+        }
+        throw error;
+      }
+
+      this.logger.log(`✅ Usuário brasileiro encontrado: ${data.id} - ${data.email}`);
+      return data;
+    } catch (error) {
+      this.logger.error(`❌ Erro ao buscar usuário brasileiro por telefone ${phoneNumber}:`, error);
+      return null;
+    }
+  }
+
+  /**
    * Busca team por número de telefone (para usuários brasileiros)
    */
   async getTeamByPhone(phoneNumber: string): Promise<Team | null> {
     try {
-      // Remove caracteres não numéricos
-      const cleanPhone = phoneNumber.replace(/\D/g, '');
+      // Primeiro, buscar o usuário na tabela profiles
+      const userProfile = await this.findBrazilianUserByPhone(phoneNumber);
       
-      // Para usuários brasileiros, vamos buscar por um campo phone ou similar
-      // Como não temos esse campo na interface atual, vamos simular uma busca
-      // Em uma implementação real, você precisaria adicionar um campo phone na tabela teams
-      
-      // Por enquanto, vamos retornar um team padrão para demonstração
-      // Em produção, você deve implementar a lógica real de busca
-      
-      this.logger.warn(`Busca por team por telefone não implementada: ${phoneNumber}`);
-      return null;
+      if (!userProfile) {
+        this.logger.log(`👤 Usuário brasileiro não encontrado: ${phoneNumber}`);
+        return null;
+      }
+
+      // Buscar o team associado ao usuário (admin_id)
+      const { data, error } = await this.supabaseService
+        .getClient()
+        .from('teams')
+        .select('*')
+        .eq('admin_id', userProfile.id)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          this.logger.log(`👥 Team não encontrado para usuário: ${userProfile.id}`);
+          return null;
+        }
+        throw error;
+      }
+
+      this.logger.log(`✅ Team encontrado para usuário brasileiro: ${data.id}`);
+      return data as Team;
     } catch (error) {
-      this.logger.error(`Erro ao buscar team por telefone ${phoneNumber}:`, error);
+      this.logger.error(`❌ Erro ao buscar team por telefone ${phoneNumber}:`, error);
       return null;
     }
   }

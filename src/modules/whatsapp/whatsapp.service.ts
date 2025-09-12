@@ -15,14 +15,19 @@ import { WebhookDto } from './dto/webhook.dto';
 
 interface ConversationState {
   isWaitingForName: boolean;
+  isWaitingForEmail: boolean;
   isWaitingForConfirmation: boolean;
   isInUpgradeFlow: boolean;
+  isInRegistrationFlow: boolean;
+  registrationStep: 'introduction' | 'name' | 'email' | 'confirmation' | 'completed';
   upgradeStep: 'introduction' | 'plan_selection' | 'frequency_selection' | 'payment_info' | 'confirmation';
   selectedPlan?: string;
   selectedFrequency?: 'monthly' | 'yearly';
   pendingDocument?: any;
   jurisdiction?: string;
   ddi?: string;
+  pendingName?: string;
+  pendingEmail?: string;
 }
 
 interface LegalDocument {
@@ -48,6 +53,7 @@ export class WhatsAppService {
     private usersService: UsersService,
     private upgradeSessionsService: UpgradeSessionsService,
     private plansService: PlansService,
+    private subscriptionsService: SubscriptionsService,
     private stripeService: StripeService,
     private jurisdictionService: JurisdictionService,
     private teamsService: TeamsService,
@@ -165,6 +171,153 @@ export class WhatsAppService {
     }
   }
 
+  /**
+   * Gerencia o fluxo de cadastro para usuários não registrados
+   */
+  private async handleUnregisteredUser(
+    phone: string, 
+    text: string, 
+    state: ConversationState, 
+    jurisdiction: any, 
+    isBrazilianUser: boolean
+  ): Promise<void> {
+    try {
+      // Se é usuário brasileiro, enviar link para cadastro no site
+      if (isBrazilianUser) {
+        const response = `🇧🇷 Olá! Seja bem-vindo ao Chat LawX!\n\nPara usuários brasileiros, você precisa se cadastrar em nossa plataforma web.\n\n🔗 Acesse: https://plataforma.lawx.ai/cadastro\n\nApós o cadastro, você poderá usar nosso assistente jurídico via WhatsApp.\n\nSe já possui cadastro, verifique se seu número está vinculado à sua conta.`;
+        await this.sendMessage(phone, response);
+        return;
+      }
+
+      // Para PT/ES, fluxo de cadastro via WhatsApp
+      if (!state.isInRegistrationFlow) {
+        // Iniciar fluxo de cadastro
+        const response = `🌍 Olá! Seja bem-vindo ao Chat LawX!\n\nSou seu assistente jurídico e estou aqui para ajudá-lo com consultas legais.\n\nPara começar, preciso de algumas informações:\n\n📝 Qual é o seu nome completo?`;
+        await this.sendMessage(phone, response);
+        this.setConversationState(phone, {
+          isInRegistrationFlow: true,
+          registrationStep: 'name',
+          isWaitingForName: true,
+          isWaitingForEmail: false,
+          isWaitingForConfirmation: false,
+          isInUpgradeFlow: false,
+          upgradeStep: 'introduction',
+          jurisdiction: jurisdiction.jurisdiction,
+          ddi: jurisdiction.ddi
+        });
+        return;
+      }
+
+      // Processar etapas do cadastro
+      if (state.registrationStep === 'name' && state.isWaitingForName) {
+        // Validar nome
+        if (text.length < 2) {
+          await this.sendMessage(phone, '❌ Por favor, informe um nome válido com pelo menos 2 caracteres.');
+          return;
+        }
+
+        // Solicitar email
+        const response = `✅ Obrigado, ${text}!\n\n📧 Agora preciso do seu e-mail para completar o cadastro:`;
+        await this.sendMessage(phone, response);
+        this.setConversationState(phone, {
+          ...state,
+          registrationStep: 'email',
+          isWaitingForName: false,
+          isWaitingForEmail: true,
+          pendingName: text
+        });
+        return;
+      }
+
+      if (state.registrationStep === 'email' && state.isWaitingForEmail) {
+        // Validar email
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(text)) {
+          await this.sendMessage(phone, '❌ Por favor, informe um e-mail válido.');
+          return;
+        }
+
+        // Confirmar dados
+        const response = `✅ Perfeito!\n\n📋 Confirme seus dados:\n\n👤 Nome: ${state.pendingName}\n📧 E-mail: ${text}\n📱 Telefone: ${phone}\n🌍 País: ${jurisdiction.country}\n\nDigite "CONFIRMAR" para finalizar o cadastro ou "CANCELAR" para recomeçar.`;
+        await this.sendMessage(phone, response);
+        this.setConversationState(phone, {
+          ...state,
+          registrationStep: 'confirmation',
+          isWaitingForEmail: false,
+          isWaitingForConfirmation: true,
+          pendingEmail: text
+        });
+        return;
+      }
+
+      if (state.registrationStep === 'confirmation' && state.isWaitingForConfirmation) {
+        if (text.toUpperCase() === 'CONFIRMAR') {
+          // Finalizar cadastro
+          await this.finalizeUserRegistration(phone, state, jurisdiction);
+        } else if (text.toUpperCase() === 'CANCELAR') {
+          // Recomeçar cadastro
+          const response = '🔄 Cadastro cancelado. Vamos recomeçar!\n\n📝 Qual é o seu nome completo?';
+          await this.sendMessage(phone, response);
+          this.setConversationState(phone, {
+            isInRegistrationFlow: true,
+            registrationStep: 'name',
+            isWaitingForName: true,
+            isWaitingForEmail: false,
+            isWaitingForConfirmation: false,
+            isInUpgradeFlow: false,
+            upgradeStep: 'introduction',
+            jurisdiction: jurisdiction.jurisdiction,
+            ddi: jurisdiction.ddi
+          });
+        } else {
+          await this.sendMessage(phone, '❌ Por favor, digite "CONFIRMAR" para finalizar ou "CANCELAR" para recomeçar.');
+        }
+        return;
+      }
+
+    } catch (error) {
+      this.logger.error('Erro no fluxo de cadastro:', error);
+      await this.sendMessage(phone, '❌ Ocorreu um erro durante o cadastro. Tente novamente mais tarde.');
+    }
+  }
+
+  /**
+   * Finaliza o cadastro do usuário e cria assinatura Fremium
+   */
+  private async finalizeUserRegistration(
+    phone: string, 
+    state: ConversationState, 
+    jurisdiction: any
+  ): Promise<void> {
+    try {
+      // Criar usuário
+      const user = await this.usersService.registerUserWithLegalInfo(
+        phone,
+        state.pendingName!,
+        state.pendingEmail!,
+        jurisdiction.jurisdiction,
+        jurisdiction.ddi
+      );
+
+      // Criar assinatura Fremium automaticamente
+      await this.subscriptionsService.createFremiumSubscription(user.id);
+
+      // Mensagem de boas-vindas
+      const response = `🎉 Parabéns, ${state.pendingName}!\n\n✅ Seu cadastro foi realizado com sucesso!\n\n🎁 Você recebeu automaticamente o plano *Fremium* com:\n• 2 consultas jurídicas gratuitas\n• Análise de documentos básica\n\n💬 Agora você pode:\n• Fazer perguntas sobre direito\n• Enviar documentos para análise\n• Solicitar orientações jurídicas\n\nDigite "MENU" para ver todas as opções disponíveis.`;
+      
+      await this.sendMessage(phone, response);
+      
+      // Limpar estado da conversa
+      this.clearConversationState(phone);
+      
+      this.logger.log(`✅ Usuário ${phone} cadastrado com sucesso com plano Fremium`);
+
+    } catch (error) {
+      this.logger.error('Erro ao finalizar cadastro:', error);
+      await this.sendMessage(phone, '❌ Erro ao finalizar cadastro. Tente novamente mais tarde.');
+    }
+  }
+
   private async processMessage(message: any): Promise<void> {
     try {
       if (!message.key?.remoteJid) {
@@ -197,24 +350,9 @@ export class WhatsAppService {
       // Extrair texto da mensagem
       const text = message.message?.conversation || '';
 
-      // Verificar se usuário não está registrado (apenas para PT/ES)
-      if (!isBrazilianUser && user && !user.is_registered) {
-        
-        if (state.isWaitingForName) {
-          await this.usersService.registerUser(phone, text);
-          const response = `Olá ${text}! Fizemos seu cadastro inicial, agora vamos começar a ajudá-lo com suas consultas jurídicas.\n\nPara isso, você pode me enviar documentos jurídicos ou fazer perguntas sobre direito.`;
-          await this.sendMessage(phone, response);
-          this.clearConversationState(phone);
-        } else {
-          const response = 'Olá! Seja bem vindo ao Chat LawX.\nAqui iremos te ajudar com suas consultas jurídicas.\nMas antes, qual é o seu nome?';
-          await this.sendMessage(phone, response);
-          this.setConversationState(phone, { 
-            isWaitingForName: true, 
-            isWaitingForConfirmation: false,
-            isInUpgradeFlow: false,
-            upgradeStep: 'introduction'
-          });
-        }
+      // Verificar se usuário não está registrado
+      if (!user || !user.is_registered) {
+        await this.handleUnregisteredUser(phone, text, state, jurisdiction, isBrazilianUser);
         return;
       }
 
@@ -1451,8 +1589,18 @@ https://play.google.com/store/apps/details?id=com.mepoupebot.app
     };
   }
 
-  private setConversationState(phone: string, state: ConversationState): void {
-    this.conversationStates.set(phone, state);
+  private setConversationState(phone: string, state: Partial<ConversationState>): void {
+    const currentState = this.conversationStates.get(phone) || {
+      isWaitingForName: false,
+      isWaitingForEmail: false,
+      isWaitingForConfirmation: false,
+      isInUpgradeFlow: false,
+      isInRegistrationFlow: false,
+      registrationStep: 'introduction',
+      upgradeStep: 'introduction'
+    };
+    
+    this.conversationStates.set(phone, { ...currentState, ...state });
   }
 
   private clearConversationState(phone: string): void {

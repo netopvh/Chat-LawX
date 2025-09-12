@@ -8,8 +8,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: dev_password
       MYSQL_DATABASE: chat_lawx_dev
-      MYSQL_USER: dev_user
-      MYSQL_PASSWORD: dev_password
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: fn1d2f13r0
     ports:
       - "3307:3306"
     volumes:

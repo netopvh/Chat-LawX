@@ -145,6 +145,36 @@ export class UsersService {
     };
   }
 
+  /**
+   * Registra usuário com informações jurídicas completas
+   */
+  async registerUserWithLegalInfo(
+    phone: string, 
+    name: string, 
+    email: string, 
+    jurisdiction: string, 
+    ddi: string
+  ): Promise<User> {
+    try {
+      console.log('👤 Registrando usuário com informações jurídicas:', { phone, name, email, jurisdiction, ddi });
+      
+      // Detectar jurisdição
+      const jurisdictionInfo = this.jurisdictionService.detectJurisdiction(phone);
+      
+      // Para usuários brasileiros, criar no Supabase
+      if (jurisdictionInfo.jurisdiction === 'BR') {
+        return await this.registerBrazilianUser(phone, name, email, jurisdictionInfo);
+      }
+      
+      // Para Portugal/Espanha, criar no MySQL local
+      return await this.registerLocalUser(phone, name, email, jurisdictionInfo);
+      
+    } catch (error) {
+      this.logger.error('Erro ao registrar usuário com informações jurídicas:', error);
+      throw error;
+    }
+  }
+
   async registerUser(phone: string, name: string): Promise<User> {
     const existingUser = await this.findByPhone(phone);
     
@@ -205,6 +235,96 @@ export class UsersService {
     
     // Para Portugal/Espanha, usar Prisma local
     return await this.getLocalUser(phone, jurisdiction);
+  }
+
+  /**
+   * Registra usuário brasileiro no Supabase
+   */
+  private async registerBrazilianUser(phone: string, name: string, email: string, jurisdiction: any): Promise<User> {
+    try {
+      // Criar usuário no Supabase Auth
+      const { data, error } = await this.supabaseService.getClient()
+        .auth.admin.createUser({
+          email: email,
+          password: this.generateRandomPassword(),
+          user_metadata: {
+            phone: phone,
+            name: name,
+            jurisdiction: jurisdiction.jurisdiction,
+            ddi: jurisdiction.ddi,
+            is_whatsapp_user: true
+          }
+        });
+
+      if (error) {
+        this.logger.error('Erro ao criar usuário brasileiro:', error);
+        throw new Error('Erro ao criar usuário brasileiro');
+      }
+
+      // Criar team para o usuário com limite padrão
+      const team = await this.teamsService.createOrUpdateTeamForUser(
+        data.user.id,
+        phone,
+        2 // Limite padrão de 2 mensagens para plano Fremium
+      );
+
+      return {
+        id: data.user.id,
+        phone: phone,
+        name: name,
+        is_registered: true,
+        jurisdiction: jurisdiction.jurisdiction,
+        ddi: jurisdiction.ddi,
+        team_id: team.id,
+        created_at: data.user.created_at || new Date().toISOString(),
+        updated_at: data.user.updated_at || new Date().toISOString(),
+      };
+    } catch (error) {
+      this.logger.error('Erro ao registrar usuário brasileiro:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Registra usuário local (PT/ES) no MySQL
+   */
+  private async registerLocalUser(phone: string, name: string, email: string, jurisdiction: any): Promise<User> {
+    try {
+      // Criar usuário no MySQL via Prisma
+      const user = await this.prismaService.user.create({
+        data: {
+          phone: phone,
+          name: name,
+          email: email,
+          ddi: jurisdiction.ddi,
+          jurisdiction: jurisdiction.jurisdiction,
+          messagesCount: 0, // Iniciar com 0 mensagens
+          isRegistered: true, // Marcar como registrado
+        }
+      });
+
+      return {
+        id: user.id,
+        phone: user.phone,
+        name: user.name || '',
+        is_registered: true,
+        jurisdiction: user.jurisdiction,
+        ddi: user.ddi,
+        messages_count: user.messagesCount,
+        created_at: user.createdAt.toISOString(),
+        updated_at: user.updatedAt.toISOString(),
+      };
+    } catch (error) {
+      this.logger.error('Erro ao registrar usuário local:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Gera senha aleatória para usuários brasileiros
+   */
+  private generateRandomPassword(): string {
+    return Math.random().toString(36).slice(-12) + Math.random().toString(36).slice(-12);
   }
 
   /**
@@ -275,7 +395,7 @@ export class UsersService {
           id: localUser.id,
           phone: localUser.phone,
           name: localUser.name || '',
-          is_registered: true,
+          is_registered: localUser.isRegistered,
           jurisdiction: localUser.jurisdiction,
           ddi: localUser.ddi,
           messages_count: localUser.messagesCount,
@@ -285,12 +405,15 @@ export class UsersService {
       }
       
       // Se não encontrou, criar usuário local
-      const newUser = await this.prismaService.createUser({
-        phone,
-        ddi: jurisdiction.ddi,
-        jurisdiction: jurisdiction.jurisdiction,
-        name: '',
-        messagesCount: 0,
+      const newUser = await this.prismaService.user.create({
+        data: {
+          phone,
+          ddi: jurisdiction.ddi,
+          jurisdiction: jurisdiction.jurisdiction,
+          name: '',
+          messagesCount: 0,
+          isRegistered: false, // Não registrado inicialmente
+        }
       });
       
       return {

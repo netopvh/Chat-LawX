@@ -6,6 +6,7 @@ import { AiModule } from '../ai/ai.module';
 import { UploadModule } from '../upload/upload.module';
 import { UsageModule } from '../usage/usage.module';
 import { StripeModule } from '../stripe/stripe.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { UpgradeSessionsModule } from '../upgrade-sessions/upgrade-sessions.module';
 import { PlansModule } from '../plans/plans.module';
 import { JurisdictionModule } from '../jurisdiction/jurisdiction.module';
@@ -19,6 +20,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     UploadModule, 
     UsageModule, 
     StripeModule, 
+    SubscriptionsModule,
     UpgradeSessionsModule, 
     PlansModule,
     JurisdictionModule,

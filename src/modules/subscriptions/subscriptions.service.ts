@@ -201,26 +201,83 @@ export class SubscriptionsService {
 
   async createFremiumSubscription(userId: string): Promise<Subscription> {
     try {
+      this.logger.log(`🎁 Criando assinatura Fremium para usuário: ${userId}`);
+      
       // Buscar plano Fremium
       const { data: fremiumPlan, error: planError } = await this.supabaseService.getClient()
         .from('plans')
         .select('*')
         .eq('name', 'Fremium')
+        .eq('is_active', true)
         .single();
 
-      if (planError) {
+      if (planError || !fremiumPlan) {
         this.logger.error('Erro ao buscar plano Fremium:', planError);
-        throw new Error('Plano Fremium não encontrado');
+        
+        // Se não existe, criar o plano Fremium automaticamente
+        const newFremiumPlan = await this.createFremiumPlan();
+        return this.createSubscription({
+          user_id: userId,
+          plan_id: newFremiumPlan.id,
+          billing_cycle: 'monthly',
+          status: 'active',
+          jurisdiction: 'PT' // Default para PT/ES
+        });
       }
 
-      return this.createSubscription({
+      const subscription = await this.createSubscription({
         user_id: userId,
         plan_id: fremiumPlan.id,
         billing_cycle: 'monthly',
-        status: 'active'
+        status: 'active',
+        jurisdiction: fremiumPlan.jurisdiction
       });
+
+      this.logger.log(`✅ Assinatura Fremium criada com sucesso para usuário: ${userId}`);
+      return subscription;
     } catch (error) {
       this.logger.error('Erro ao criar assinatura Fremium:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cria o plano Fremium se não existir
+   */
+  private async createFremiumPlan(): Promise<any> {
+    try {
+      this.logger.log('🔧 Criando plano Fremium automaticamente...');
+      
+      const fremiumPlanData = {
+        name: 'Fremium',
+        description: 'Plano gratuito com 2 consultas jurídicas',
+        monthly_price: 0,
+        yearly_price: 0,
+        consultation_limit: 2,
+        document_analysis_limit: 1,
+        message_limit: 2,
+        is_unlimited: false,
+        is_active: true,
+        jurisdiction: 'PT',
+        ddi: '351',
+        features: ['2 consultas jurídicas', '1 análise de documento', 'Suporte básico']
+      };
+
+      const { data, error } = await this.supabaseService.getClient()
+        .from('plans')
+        .insert(fremiumPlanData)
+        .select()
+        .single();
+
+      if (error) {
+        this.logger.error('Erro ao criar plano Fremium:', error);
+        throw new Error('Erro ao criar plano Fremium');
+      }
+
+      this.logger.log('✅ Plano Fremium criado com sucesso');
+      return data;
+    } catch (error) {
+      this.logger.error('Erro ao criar plano Fremium:', error);
       throw error;
     }
   }

@@ -18,12 +18,13 @@ model User {
   name          String?
   email         String?
   messagesCount Int      @default(0)
+  isRegistered  Boolean  @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
+
   legalDocuments LegalDocument[]
   usage          Usage[]
-  
+
   @@map("users")
 }
 

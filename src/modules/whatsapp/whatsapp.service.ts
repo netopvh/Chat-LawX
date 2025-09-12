@@ -8,6 +8,7 @@ import { UploadService } from '../upload/upload.service';
 import { StripeService } from '../stripe/stripe.service';
 import { UpgradeSessionsService } from '../upgrade-sessions/upgrade-sessions.service';
 import { PlansService } from '../plans/plans.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
 import { TeamsService } from '../teams/teams.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -1583,9 +1584,12 @@ https://play.google.com/store/apps/details?id=com.mepoupebot.app
     const state = this.conversationStates.get(phone);
     return state || {
       isWaitingForName: false,
+      isWaitingForEmail: false,
       isWaitingForConfirmation: false,
       isInUpgradeFlow: false,
-      upgradeStep: 'introduction'
+      isInRegistrationFlow: false,
+      upgradeStep: 'introduction',
+      registrationStep: 'none',
     };
   }
 

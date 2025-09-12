@@ -403,8 +403,6 @@ export class SubscriptionsService {
         stripe_subscription_id: stripeSubscription.id,
         stripe_customer_id: stripeSubscription.customer,
         jurisdiction: stripeSubscription.metadata?.jurisdiction,
-        sync_status: 'synced',
-        last_sync_at: new Date().toISOString(),
       });
 
       this.logger.log('Assinatura criada via webhook:', stripeSubscription.id);

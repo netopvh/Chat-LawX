@@ -158,6 +158,14 @@ export class JurisdictionService {
   }
 
   /**
+   * Obtém moeda para jurisdição
+   */
+  getCurrency(jurisdiction: string): string {
+    const config = this.getJurisdictionConfig(jurisdiction);
+    return config?.currency || 'BRL';
+  }
+
+  /**
    * Formata número de telefone para exibição
    */
   formatPhoneNumber(phoneNumber: string, jurisdiction: string): string {

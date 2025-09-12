@@ -121,6 +121,26 @@ export class StripeService {
   }
 
   // Subscription Management
+  async createSubscription(data: {
+    customer: string;
+    items: Array<{ price: string }>;
+    metadata?: Record<string, string>;
+  }): Promise<StripeSubscription> {
+    try {
+      const subscription = await this.stripe.subscriptions.create({
+        customer: data.customer,
+        items: data.items,
+        metadata: data.metadata,
+      });
+
+      this.logger.log(`Assinatura criada: ${subscription.id}`);
+      return subscription as StripeSubscription;
+    } catch (error) {
+      this.logger.error('Erro ao criar assinatura:', error);
+      throw error;
+    }
+  }
+
   async getSubscription(subscriptionId: string): Promise<StripeSubscription> {
     try {
       const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
@@ -162,7 +182,7 @@ export class StripeService {
   /**
    * Cria sessão de checkout simplificada (método usado pelo UpgradeSessionsService)
    */
-  async createCheckoutSession(data: {
+  async createSimpleCheckoutSession(data: {
     priceId: string;
     customerEmail?: string;
     metadata?: Record<string, string>;

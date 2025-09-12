@@ -200,17 +200,17 @@ export class PlansService {
 
       // Criar preços no Stripe
       const stripePriceMonthly = await this.stripeService.createPrice({
-        product: stripeProduct.id,
-        unit_amount: Math.round(createPlanDto.monthly_price * 100), // Converter para centavos
+        productId: stripeProduct.id,
+        unitAmount: Math.round(createPlanDto.monthly_price * 100), // Converter para centavos
         currency: this.jurisdictionService.getCurrency(createPlanDto.jurisdiction),
-        recurring: { interval: 'month' },
+        recurring: { interval: 'month', intervalCount: 1 },
       });
 
       const stripePriceYearly = await this.stripeService.createPrice({
-        product: stripeProduct.id,
-        unit_amount: Math.round(createPlanDto.yearly_price * 100), // Converter para centavos
+        productId: stripeProduct.id,
+        unitAmount: Math.round(createPlanDto.yearly_price * 100), // Converter para centavos
         currency: this.jurisdictionService.getCurrency(createPlanDto.jurisdiction),
-        recurring: { interval: 'year' },
+        recurring: { interval: 'year', intervalCount: 1 },
       });
 
       // Criar plano no Supabase com IDs do Stripe

@@ -354,17 +354,17 @@ export class UpgradeSessionsService {
         throw new Error(`Stripe Price ID não encontrado para ${planName} ${billingCycle}`);
       }
 
-      const checkoutUrl = await this.stripeService.createCheckoutSession({
-        priceId: stripePriceId,
-        customerEmail: userEmail,
-        metadata: {
-          userId,
-          sessionId: session.id,
-          planName,
-          billingCycle,
-          jurisdiction
-        }
-      });
+            const checkoutUrl = await this.stripeService.createSimpleCheckoutSession({
+              priceId: stripePriceId,
+              customerEmail: userEmail,
+              metadata: {
+                userId,
+                sessionId: session.id,
+                planName,
+                billingCycle,
+                jurisdiction
+              }
+            });
 
       // Atualizar sessão com URL do checkout
       await this.updateSession(session.id, {

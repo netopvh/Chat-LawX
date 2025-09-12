@@ -34,13 +34,13 @@ export class StripeController {
         case 'customer.updated':
           await this.handleCustomerUpdated(event);
           break;
-        case 'subscription.created':
+        case 'customer.subscription.created':
           await this.handleSubscriptionCreated(event);
           break;
-        case 'subscription.updated':
+        case 'customer.subscription.updated':
           await this.handleSubscriptionUpdated(event);
           break;
-        case 'subscription.deleted':
+        case 'customer.subscription.deleted':
           await this.handleSubscriptionDeleted(event);
           break;
         case 'invoice.payment_succeeded':

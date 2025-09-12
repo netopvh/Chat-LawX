@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { UsageService } from '../usage/usage.service';
@@ -28,6 +28,8 @@ export interface User {
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private supabaseService: SupabaseService,
     private subscriptionsService: SubscriptionsService,
@@ -433,84 +435,5 @@ export class UsersService {
     }
   }
 
-  /**
-   * Registra usuário com informações jurídicas
-   */
-  async registerUserWithLegalInfo(
-    phone: string, 
-    name: string, 
-    legalSpecialty?: string,
-    oabNumber?: string
-  ): Promise<User> {
-    const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
-    
-    if (jurisdiction.jurisdiction === 'BR') {
-      // Para Brasil, atualizar no Supabase
-      return await this.registerBrazilianUser(phone, name, legalSpecialty, oabNumber);
-    } else {
-      // Para Portugal/Espanha, atualizar no MySQL local
-      return await this.registerLocalUser(phone, name, legalSpecialty);
-    }
-  }
 
-  private async registerBrazilianUser(
-    phone: string, 
-    name: string, 
-    legalSpecialty?: string,
-    oabNumber?: string
-  ): Promise<User> {
-    const user = await this.findByPhone(phone);
-    if (!user) {
-      throw new NotFoundException('Usuário não encontrado');
-    }
-
-    // Atualizar metadata do usuário
-    const { data, error } = await this.supabaseService.getClient()
-      .auth.admin.updateUserById(user.id, {
-        user_metadata: {
-          name,
-          is_registered: true,
-          legal_specialty: legalSpecialty,
-          oab_number: oabNumber,
-          jurisdiction: 'BR',
-          ddi: '55',
-        },
-      });
-
-    if (error) throw new Error('Erro ao atualizar usuário brasileiro');
-    
-    return {
-      ...user,
-      name,
-      is_registered: true,
-      legal_specialty: legalSpecialty,
-      oab_number: oabNumber,
-      jurisdiction: 'BR',
-      ddi: '55',
-    };
-  }
-
-  private async registerLocalUser(
-    phone: string, 
-    name: string, 
-    legalSpecialty?: string
-  ): Promise<User> {
-    const updatedUser = await this.prismaService.updateUser(phone, {
-      name,
-      legalSpecialty,
-    });
-
-    return {
-      id: updatedUser.id,
-      phone: updatedUser.phone,
-      name: updatedUser.name || '',
-      is_registered: true,
-      jurisdiction: updatedUser.jurisdiction,
-      ddi: updatedUser.ddi,
-      legal_specialty: legalSpecialty,
-      messages_count: updatedUser.messagesCount,
-      created_at: updatedUser.createdAt.toISOString(),
-      updated_at: updatedUser.updatedAt.toISOString(),
-    };
-  }
 } 

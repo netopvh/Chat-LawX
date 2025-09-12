@@ -42,6 +42,14 @@ export class UsersService {
   async create(createUserDto: CreateUserDto): Promise<User> {
     console.log('👤 Criando usuário:', JSON.stringify(createUserDto, null, 2));
     
+    // Detectar jurisdição
+    const jurisdiction = this.jurisdictionService.detectJurisdiction(createUserDto.phone);
+    
+    // Para usuários brasileiros, NÃO criar via WhatsApp
+    if (jurisdiction.jurisdiction === 'BR') {
+      throw new Error('Usuários brasileiros devem se cadastrar em https://plataforma.lawx.ai/auth/signup');
+    }
+    
     const existingUser = await this.findByPhone(createUserDto.phone);
     
     if (existingUser) {
@@ -149,6 +157,7 @@ export class UsersService {
 
   /**
    * Registra usuário com informações jurídicas completas
+   * IMPORTANTE: Usuários brasileiros NÃO são registrados via WhatsApp
    */
   async registerUserWithLegalInfo(
     phone: string, 
@@ -163,9 +172,9 @@ export class UsersService {
       // Detectar jurisdição
       const jurisdictionInfo = this.jurisdictionService.detectJurisdiction(phone);
       
-      // Para usuários brasileiros, criar no Supabase
+      // Para usuários brasileiros, NÃO registrar via WhatsApp
       if (jurisdictionInfo.jurisdiction === 'BR') {
-        return await this.registerBrazilianUser(phone, name, email, jurisdictionInfo);
+        throw new Error('Usuários brasileiros devem se cadastrar em https://plataforma.lawx.ai/auth/signup');
       }
       
       // Para Portugal/Espanha, criar no MySQL local
@@ -178,6 +187,14 @@ export class UsersService {
   }
 
   async registerUser(phone: string, name: string): Promise<User> {
+    // Detectar jurisdição
+    const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+    
+    // Para usuários brasileiros, NÃO registrar via WhatsApp
+    if (jurisdiction.jurisdiction === 'BR') {
+      throw new Error('Usuários brasileiros devem se cadastrar em https://plataforma.lawx.ai/auth/signup');
+    }
+    
     const existingUser = await this.findByPhone(phone);
     
     if (existingUser) {
@@ -223,14 +240,14 @@ export class UsersService {
     return this.create({ phone, name });
   }
 
-  async getOrCreateUser(phone: string): Promise<User> {
+  async getOrCreateUser(phone: string): Promise<User | null> {
     console.log('👤 Buscando ou criando usuário para:', phone);
     
     // Detectar jurisdição baseada no número de telefone
     const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
     console.log(`🌍 Jurisdição detectada: ${jurisdiction.jurisdiction} para ${phone}`);
     
-    // Para usuários brasileiros, buscar no Supabase teams
+    // Para usuários brasileiros, buscar no Supabase teams (NÃO CRIAR)
     if (jurisdiction.jurisdiction === 'BR') {
       return await this.getBrazilianUser(phone, jurisdiction);
     }
@@ -240,52 +257,11 @@ export class UsersService {
   }
 
   /**
-   * Registra usuário brasileiro no Supabase
+   * MÉTODO REMOVIDO: registerBrazilianUser
+   * 
+   * Usuários brasileiros NÃO devem ser cadastrados via WhatsApp.
+   * Eles devem se cadastrar em: https://plataforma.lawx.ai/auth/signup
    */
-  private async registerBrazilianUser(phone: string, name: string, email: string, jurisdiction: any): Promise<User> {
-    try {
-      // Criar usuário no Supabase Auth
-      const { data, error } = await this.supabaseService.getClient()
-        .auth.admin.createUser({
-          email: email,
-          password: this.generateRandomPassword(),
-          user_metadata: {
-            phone: phone,
-            name: name,
-            jurisdiction: jurisdiction.jurisdiction,
-            ddi: jurisdiction.ddi,
-            is_whatsapp_user: true
-          }
-        });
-
-      if (error) {
-        this.logger.error('Erro ao criar usuário brasileiro:', error);
-        throw new Error('Erro ao criar usuário brasileiro');
-      }
-
-      // Criar team para o usuário com limite padrão
-      const team = await this.teamsService.createOrUpdateTeamForUser(
-        data.user.id,
-        phone,
-        2 // Limite padrão de 2 mensagens para plano Fremium
-      );
-
-      return {
-        id: data.user.id,
-        phone: phone,
-        name: name,
-        is_registered: true,
-        jurisdiction: jurisdiction.jurisdiction,
-        ddi: jurisdiction.ddi,
-        team_id: team.id,
-        created_at: data.user.created_at || new Date().toISOString(),
-        updated_at: data.user.updated_at || new Date().toISOString(),
-      };
-    } catch (error) {
-      this.logger.error('Erro ao registrar usuário brasileiro:', error);
-      throw error;
-    }
-  }
 
   /**
    * Registra usuário local (PT/ES) no MySQL
@@ -330,9 +306,9 @@ export class UsersService {
   }
 
   /**
-   * Busca ou cria usuário brasileiro (Supabase teams)
+   * Busca usuário brasileiro no Supabase (NÃO CRIA se não encontrar)
    */
-  private async getBrazilianUser(phone: string, jurisdiction: any): Promise<User> {
+  private async getBrazilianUser(phone: string, jurisdiction: any): Promise<User | null> {
     try {
       // Buscar no Supabase teams
       // TODO: Implementar busca de usuário no Supabase teams
@@ -353,36 +329,15 @@ export class UsersService {
       //   };
       // }
       
-      // Se não encontrou, criar usuário básico
-      const { data, error } = await this.supabaseService.getClient()
-        .auth.admin.createUser({
-          phone,
-          user_metadata: {
-            is_registered: false,
-            jurisdiction: jurisdiction.jurisdiction,
-            ddi: jurisdiction.ddi,
-          },
-          email_confirm: true,
-        });
-
-      if (error) {
-        console.error('❌ Erro ao criar usuário brasileiro:', error);
-        throw new Error(`Erro ao criar usuário brasileiro: ${error.message}`);
-      }
+      // IMPORTANTE: NÃO CRIAR usuário brasileiro automaticamente
+      // Se não encontrou, retornar null para que o WhatsAppService
+      // redirecione para https://plataforma.lawx.ai/auth/signup
+      console.log('🇧🇷 Usuário brasileiro não encontrado no Supabase. Deve se cadastrar em plataforma.lawx.ai');
+      return null;
       
-      return {
-        id: data.user.id,
-        phone: data.user.phone || phone,
-        name: '',
-        is_registered: false,
-        jurisdiction: jurisdiction.jurisdiction,
-        ddi: jurisdiction.ddi,
-        created_at: data.user.created_at,
-        updated_at: data.user.updated_at,
-      };
     } catch (error) {
-      console.error('❌ Erro crítico ao criar usuário brasileiro:', error);
-      throw error;
+      console.error('❌ Erro ao buscar usuário brasileiro:', error);
+      return null;
     }
   }
 

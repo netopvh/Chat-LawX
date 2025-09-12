@@ -185,7 +185,7 @@ export class WhatsAppService {
     try {
       // Se é usuário brasileiro, enviar link para cadastro no site
       if (isBrazilianUser) {
-        const response = `🇧🇷 Olá! Seja bem-vindo ao Chat LawX!\n\nPara usuários brasileiros, você precisa se cadastrar em nossa plataforma web.\n\n🔗 Acesse: https://plataforma.lawx.ai/cadastro\n\nApós o cadastro, você poderá usar nosso assistente jurídico via WhatsApp.\n\nSe já possui cadastro, verifique se seu número está vinculado à sua conta.`;
+        const response = `🇧🇷 Olá! Seja bem-vindo ao Chat LawX!\n\nPara usuários brasileiros, você precisa se cadastrar em nossa plataforma web.\n\n🔗 Acesse: https://plataforma.lawx.ai/auth/signup\n\nApós o cadastro, você poderá usar nosso assistente jurídico via WhatsApp.\n\nSe já possui cadastro, verifique se seu número está vinculado à sua conta.`;
         await this.sendMessage(phone, response);
         return;
       }
@@ -1683,16 +1683,18 @@ ${planOptions}
 
         await this.sendMessage(phone, upgradeMessage);
         
-        // Criar sessão inicial
+        // Criar sessão inicial (apenas para usuários não brasileiros)
         const user = await this.usersService.getOrCreateUser(phone);
-        await this.upgradeSessionsService.createSession({
-          user_id: userId,
-          phone: phone,
-          plan_name: '',
-          billing_cycle: 'monthly',
-          amount: 0,
-          current_step: 'plan_selection'
-        });
+        if (user) {
+          await this.upgradeSessionsService.createSession({
+            user_id: userId,
+            phone: phone,
+            plan_name: '',
+            billing_cycle: 'monthly',
+            amount: 0,
+            current_step: 'plan_selection'
+          });
+        }
       }
     } catch (error) {
       this.logger.error('❌ Erro ao iniciar fluxo de upgrade:', error);
@@ -1852,14 +1854,16 @@ Agora escolha a frequência de pagamento:
         });
       } else {
         const user = await this.usersService.getOrCreateUser(phone);
-        session = await this.upgradeSessionsService.createSession({
-          user_id: userId,
-          phone: phone,
-          plan_name: selectedPlan.name,
-          billing_cycle: 'monthly', // Temporário, será atualizado
-          amount: 0, // Será calculado quando escolher frequência
-          current_step: 'plan_selection'
-        });
+        if (user) {
+          session = await this.upgradeSessionsService.createSession({
+            user_id: userId,
+            phone: phone,
+            plan_name: selectedPlan.name,
+            billing_cycle: 'monthly', // Temporário, será atualizado
+            amount: 0, // Será calculado quando escolher frequência
+            current_step: 'plan_selection'
+          });
+        }
       }
       
       // Atualizar estado da conversa

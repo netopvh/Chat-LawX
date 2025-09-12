@@ -1,0 +1,55 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  phone         String   @unique
+  ddi           String
+  jurisdiction  String
+  name          String?
+  email         String?
+  messagesCount Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  legalDocuments LegalDocument[]
+  usage          Usage[]
+  
+  @@map("users")
+}
+
+model LegalDocument {
+  id          String   @id @default(cuid())
+  userId      String
+  type        String
+  content     String
+  analysis    String?
+  jurisdiction String
+  createdAt   DateTime @default(now())
+  
+  user User @relation(fields: [userId], references: [id])
+  
+  @@map("legal_documents")
+}
+
+model Usage {
+  id            String   @id @default(cuid())
+  userId        String
+  messagesCount Int      @default(0)
+  jurisdiction  String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  user User @relation(fields: [userId], references: [id])
+  
+  @@map("usage")
+}

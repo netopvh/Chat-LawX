@@ -790,33 +790,45 @@ model Usage {
 - [x] **Usage Module**: Modificado para contabilização de mensagens IA
 - [x] **Upgrade Sessions Module**: Integrado com Stripe Checkout
 
+### ✅ **Fase 5: Implementação dos Novos Módulos** - CONCLUÍDA
+- [x] **JurisdictionService**: Detecção de DDI e validação de jurisdições
+- [x] **TeamsService**: Integração com Supabase teams para controle de limites
+- [x] **LegalPromptsService**: Prompts jurídicos específicos por jurisdição
+- [x] **StripeService**: Integração completa com Stripe (checkout, webhooks)
+- [x] **PrismaService**: Conexão e operações MySQL para usuários PT/ES
+- [x] **Testes e Validação**: Validação de todos os novos módulos
+
 ### 🔄 **Próximas Fases**
-- [ ] **Fase 5**: Implementação dos novos módulos (Jurisdiction, Teams, Legal Prompts, Stripe)
-- [ ] **Fase 6**: Testes e validação
-- [ ] **Fase 7**: Deploy e monitoramento
+- [ ] **Fase 6**: Configuração e deploy
+- [ ] **Fase 7**: Testes de integração e validação final
+- [ ] **Fase 8**: Deploy em produção e monitoramento
 
 ### 📈 **Estatísticas do Progresso**
 - **Módulos Removidos**: 3 (Expenses, Revenues, MercadoPago)
-- **Módulos Criados**: 4 (Jurisdiction, Teams, Legal Prompts, Stripe)
+- **Módulos Criados**: 5 (Jurisdiction, Teams, Legal Prompts, Stripe, Prisma)
 - **Módulos Modificados**: 7 (AI, WhatsApp, Users, Plans, Subscriptions, Usage, Upgrade Sessions)
-- **Arquivos Criados**: 15+
-- **Arquivos Modificados**: 20+
-- **Progresso Geral**: ~70% concluído
+- **Arquivos Criados**: 25+
+- **Arquivos Modificados**: 30+
+- **Progresso Geral**: ~85% concluído
 
 ### 🎯 **Funcionalidades Implementadas**
 - ✅ Detecção automática de jurisdição por DDI (55=BR, 351=PT, 34=ES)
 - ✅ Controle de limites via Supabase teams para usuários brasileiros
-- ✅ Prompts jurídicos específicos para cada jurisdição
-- ✅ Integração com Stripe para pagamentos e webhooks
+- ✅ Prompts jurídicos específicos para cada jurisdição (BR, PT, ES)
+- ✅ Integração completa com Stripe (checkout, webhooks, produtos)
 - ✅ Controle de uso de mensagens por jurisdição
 - ✅ Fluxos de upgrade com Stripe Checkout
 - ✅ Gerenciamento de usuários por jurisdição
 - ✅ Análise de documentos jurídicos com OCR
+- ✅ Operações CRUD MySQL via Prisma para PT/ES
+- ✅ Sistema de templates e variáveis para prompts jurídicos
+- ✅ Validação de limites e controle de uso em tempo real
+- ✅ Webhook processing para eventos Stripe
 
 ---
 
 **Data de Criação**: 23/01/2025  
 **Última Atualização**: 23/01/2025  
-**Versão**: 1.3  
+**Versão**: 1.4  
 **Responsável**: AI Assistant  
-**Status**: Fase 4 concluída - 70% do projeto refatorado
+**Status**: Fase 5 concluída - 85% do projeto refatorado

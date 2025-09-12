@@ -798,18 +798,27 @@ model Usage {
 - [x] **PrismaService**: Conexão e operações MySQL para usuários PT/ES
 - [x] **Testes e Validação**: Validação de todos os novos módulos
 
+### ✅ **Fase 6: Fluxo de Cadastro Automático** - CONCLUÍDA
+- [x] **Fluxo de Cadastro Automático**: Implementado sistema de cadastro diferenciado por DDI
+- [x] **Usuários Brasileiros**: Redirecionamento para plataforma.lawx.ai
+- [x] **Usuários PT/ES**: Cadastro completo via WhatsApp (nome + email)
+- [x] **Plano Fremium**: Criação automática com 2 consultas gratuitas
+- [x] **Validação de Dados**: Validação de nome e email durante cadastro
+- [x] **Controle de Estado**: Gerenciamento de fluxo de conversa para cadastro
+
 ### 🔄 **Próximas Fases**
-- [ ] **Fase 6**: Configuração e deploy
-- [ ] **Fase 7**: Testes de integração e validação final
-- [ ] **Fase 8**: Deploy em produção e monitoramento
+- [ ] **Fase 7**: Correção de erros e testes
+- [ ] **Fase 8**: Configuração e deploy
+- [ ] **Fase 9**: Testes de integração e validação final
+- [ ] **Fase 10**: Deploy em produção e monitoramento
 
 ### 📈 **Estatísticas do Progresso**
 - **Módulos Removidos**: 3 (Expenses, Revenues, MercadoPago)
 - **Módulos Criados**: 5 (Jurisdiction, Teams, Legal Prompts, Stripe, Prisma)
-- **Módulos Modificados**: 7 (AI, WhatsApp, Users, Plans, Subscriptions, Usage, Upgrade Sessions)
+- **Módulos Modificados**: 8 (AI, WhatsApp, Users, Plans, Subscriptions, Usage, Upgrade Sessions, Prisma)
 - **Arquivos Criados**: 25+
-- **Arquivos Modificados**: 30+
-- **Progresso Geral**: ~85% concluído
+- **Arquivos Modificados**: 35+
+- **Progresso Geral**: ~90% concluído
 
 ### 🎯 **Funcionalidades Implementadas**
 - ✅ Detecção automática de jurisdição por DDI (55=BR, 351=PT, 34=ES)
@@ -824,11 +833,17 @@ model Usage {
 - ✅ Sistema de templates e variáveis para prompts jurídicos
 - ✅ Validação de limites e controle de uso em tempo real
 - ✅ Webhook processing para eventos Stripe
+- ✅ **Fluxo de cadastro automático diferenciado por DDI**
+- ✅ **Usuários brasileiros redirecionados para plataforma.lawx.ai**
+- ✅ **Cadastro completo via WhatsApp para PT/ES (nome + email)**
+- ✅ **Plano Fremium automático com 2 consultas gratuitas**
+- ✅ **Validação de dados durante cadastro**
+- ✅ **Controle de estado de conversa para fluxo de cadastro**
 
 ---
 
 **Data de Criação**: 23/01/2025  
 **Última Atualização**: 23/01/2025  
-**Versão**: 1.4  
+**Versão**: 1.5  
 **Responsável**: AI Assistant  
-**Status**: Fase 5 concluída - 85% do projeto refatorado
+**Status**: Fase 6 concluída - 90% do projeto refatorado

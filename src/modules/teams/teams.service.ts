@@ -334,6 +334,32 @@ export class TeamsService {
   // ===== MÉTODOS ESPECÍFICOS PARA CHAT LAWX =====
 
   /**
+   * Normaliza número de telefone brasileiro adicionando dígito 9 quando necessário
+   * Exemplo: 4892060485 -> 48992060485
+   */
+  private normalizeBrazilianPhone(phoneWithoutDDI: string): string[] {
+    // Se o número já tem 11 dígitos, retorna como está
+    if (phoneWithoutDDI.length === 11) {
+      return [phoneWithoutDDI];
+    }
+    
+    // Se tem 10 dígitos, adiciona o dígito 9
+    if (phoneWithoutDDI.length === 10) {
+      const normalized = phoneWithoutDDI.substring(0, 2) + '9' + phoneWithoutDDI.substring(2);
+      return [phoneWithoutDDI, normalized]; // Retorna ambos para tentar busca
+    }
+    
+    // Se tem 9 dígitos, adiciona o dígito 9
+    if (phoneWithoutDDI.length === 9) {
+      const normalized = phoneWithoutDDI.substring(0, 1) + '9' + phoneWithoutDDI.substring(1);
+      return [phoneWithoutDDI, normalized]; // Retorna ambos para tentar busca
+    }
+    
+    // Para outros tamanhos, retorna como está
+    return [phoneWithoutDDI];
+  }
+
+  /**
    * Busca usuário brasileiro na tabela profiles do Supabase
    */
   async findBrazilianUserByPhone(phoneNumber: string): Promise<any | null> {
@@ -344,31 +370,42 @@ export class TeamsService {
       
       this.logger.log(`🔍 Buscando usuário brasileiro por telefone: ${phoneWithoutDDI}`);
       
-      // Buscar na tabela profiles pelo campo phone
-      const { data, error } = await this.supabaseService
-        .getClient()
-        .from('profiles')
-        .select(`
-          id,
-          role,
-          email,
-          phone,
-          user_id,
-          updated_at
-        `)
-        .eq('phone', phoneWithoutDDI)
-        .single();
+      // Normalizar número brasileiro (adicionar dígito 9 se necessário)
+      const phoneVariations = this.normalizeBrazilianPhone(phoneWithoutDDI);
+      this.logger.log(`📱 Variações do número para busca: ${phoneVariations.join(', ')}`);
+      
+      // Tentar buscar com cada variação do número
+      for (const phoneToSearch of phoneVariations) {
+        this.logger.log(`🔍 Tentando busca com: ${phoneToSearch}`);
+        
+        const { data, error } = await this.supabaseService
+          .getClient()
+          .from('profiles')
+          .select(`
+            id,
+            role,
+            email,
+            phone,
+            user_id,
+            updated_at
+          `)
+          .eq('phone', phoneToSearch)
+          .single();
 
-      if (error) {
-        if (error.code === 'PGRST116') {
-          this.logger.log(`👤 Usuário brasileiro não encontrado: ${phoneWithoutDDI}`);
-          return null;
+        if (error) {
+          if (error.code === 'PGRST116') {
+            this.logger.log(`👤 Usuário não encontrado com número: ${phoneToSearch}`);
+            continue; // Tenta próxima variação
+          }
+          throw error;
         }
-        throw error;
+
+        this.logger.log(`✅ Usuário brasileiro encontrado: ${data.id} - ${data.email} (número: ${phoneToSearch})`);
+        return data;
       }
 
-      this.logger.log(`✅ Usuário brasileiro encontrado: ${data.id} - ${data.email}`);
-      return data;
+      this.logger.log(`👤 Usuário brasileiro não encontrado com nenhuma variação: ${phoneVariations.join(', ')}`);
+      return null;
     } catch (error) {
       this.logger.error(`❌ Erro ao buscar usuário brasileiro por telefone ${phoneNumber}:`, error);
       return null;

@@ -69,6 +69,46 @@ export class SupabaseService {
     }
   }
 
+  async uploadDocument(file: Buffer, fileName: string): Promise<string> {
+    try {
+      // Determinar o content-type baseado na extensão do arquivo
+      const contentType = this.getDocumentContentType(fileName);
+      
+      const { data, error } = await this.supabase.storage
+        .from('documents')
+        .upload(`${Date.now()}-${fileName}`, file, {
+          contentType: contentType,
+          upsert: false,
+        });
+
+      if (error) {
+        this.logger.error('Erro ao fazer upload de documento:', error);
+        throw new Error('Falha no upload do documento');
+      }
+
+      const { data: { publicUrl } } = this.supabase.storage
+        .from('documents')
+        .getPublicUrl(data.path);
+
+      return publicUrl;
+    } catch (error) {
+      this.logger.error('Erro no upload de documento:', error);
+      throw new Error('Falha no upload do documento');
+    }
+  }
+
+  private getDocumentContentType(fileName: string): string {
+    const extension = fileName.toLowerCase().split('.').pop();
+    
+    const contentTypes: { [key: string]: string } = {
+      'pdf': 'application/pdf',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'doc': 'application/msword'
+    };
+    
+    return contentTypes[extension] || 'application/octet-stream';
+  }
+
   async deleteImage(filePath: string): Promise<void> {
     try {
       const { error } = await this.supabase.storage

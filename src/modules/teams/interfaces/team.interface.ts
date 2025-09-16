@@ -1,6 +1,7 @@
 export interface Team {
   id: string;
   name: string;
+  admin_id: string; // ID do usuário administrador do team
   messages: number; // Limite de mensagens
   messages_used: number; // Contador de mensagens usadas
   created_at: string;
@@ -43,6 +44,7 @@ export interface UpdateTeamUsageDto {
 
 export interface CreateTeamDto {
   name: string;
+  admin_id: string;
   messages: number;
   metadata?: Record<string, any>;
 }

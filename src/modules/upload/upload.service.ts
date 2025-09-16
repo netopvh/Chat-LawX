@@ -37,6 +37,19 @@ export class UploadService {
     }
   }
 
+  async uploadDocumentFile(file: Buffer, fileName: string): Promise<string> {
+    try {
+      const sanitizedFileName = this.sanitizeFileName(fileName);
+      const publicUrl = await this.supabaseService.uploadDocument(file, sanitizedFileName);
+      
+      this.logger.log(`Documento enviado com sucesso: ${publicUrl}`);
+      return publicUrl;
+    } catch (error) {
+      this.logger.error('Erro no upload de documento:', error);
+      throw error;
+    }
+  }
+
   /**
    * Converte áudio base64 para MP3 usando ffmpeg
    */

@@ -12,6 +12,7 @@ import { PlansModule } from '../plans/plans.module';
 import { JurisdictionModule } from '../jurisdiction/jurisdiction.module';
 import { TeamsModule } from '../teams/teams.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { SupabaseModule } from '../supabase/supabase.module';
 
 @Module({
   imports: [
@@ -26,8 +27,10 @@ import { PrismaModule } from '../prisma/prisma.module';
     JurisdictionModule,
     TeamsModule,
     PrismaModule,
+    SupabaseModule,
   ],
   controllers: [WhatsAppController],
   providers: [WhatsAppService],
+  exports: [WhatsAppService],
 })
 export class WhatsAppModule {} 

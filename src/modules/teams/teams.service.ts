@@ -21,6 +21,31 @@ export class TeamsService {
   /**
    * Busca um team por ID
    */
+  async getTeamByAdminId(adminId: string, options: TeamQueryOptions = {}): Promise<Team | null> {
+    try {
+      const { data, error } = await this.supabaseService
+        .getClient()
+        .from('teams')
+        .select('*')
+        .eq('admin_id', adminId)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          this.logger.warn(`Team não encontrado: ${adminId}`);
+          return null;
+        }
+        throw error;
+      }
+
+      this.logger.log(`Team encontrado: ${adminId}`);
+      return data as Team;
+    } catch (error) {
+      this.logger.error(`Erro ao buscar team ${adminId}:`, error);
+      throw error;
+    }
+  }
+
   async getTeamById(teamId: string, options: TeamQueryOptions = {}): Promise<Team | null> {
     try {
       const { data, error } = await this.supabaseService
@@ -98,13 +123,36 @@ export class TeamsService {
 
   /**
    * Valida se um team pode enviar mensagem (controle de limite)
+   * @param userId - ID do usuário (pode ser profile ID ou admin ID)
    */
-  async validateTeamLimit(teamId: string): Promise<TeamLimitValidation> {
+  async validateTeamLimit(userId: string): Promise<TeamLimitValidation> {
     try {
-      const team = await this.getTeamById(teamId);
+      // Primeiro, tentar buscar team diretamente pelo admin_id
+      let team = await this.getTeamByAdminId(userId);
       
+      // Se não encontrou, pode ser que o userId seja o profile ID
+      // Nesse caso, precisamos buscar o team associado ao profile
       if (!team) {
-        throw new NotFoundException(`Team não encontrado: ${teamId}`);
+        this.logger.log(`Team não encontrado por admin_id ${userId}, tentando buscar por profile...`);
+        
+        // Buscar profile pelo ID
+        const { data: profile, error: profileError } = await this.supabaseService
+          .getClient()
+          .from('profiles')
+          .select('id, user_id')
+          .eq('id', userId)
+          .single();
+
+        if (profileError || !profile) {
+          throw new NotFoundException(`Profile não encontrado: ${userId}`);
+        }
+
+        // Buscar team pelo user_id do profile (que é o admin_id)
+        team = await this.getTeamByAdminId(profile.user_id);
+        
+        if (!team) {
+          throw new NotFoundException(`Team não encontrado para profile ${userId} (user_id: ${profile.user_id})`);
+        }
       }
 
       const canSendMessage = team.messages_used < team.messages;
@@ -119,32 +167,58 @@ export class TeamsService {
         team,
       };
 
-      this.logger.log(`Validação de limite para team ${teamId}: ${team.messages_used}/${team.messages} (${canSendMessage ? 'OK' : 'LIMITE ATINGIDO'})`);
+      this.logger.log(`Validação de limite para team ${team.id} (admin_id: ${team.admin_id}): ${team.messages_used}/${team.messages} (${canSendMessage ? 'OK' : 'LIMITE ATINGIDO'})`);
       return validation;
     } catch (error) {
-      this.logger.error(`Erro ao validar limite do team ${teamId}:`, error);
+      this.logger.error(`Erro ao validar limite do team ${userId}:`, error);
       throw error;
     }
   }
 
   /**
    * Incrementa o contador de mensagens usadas de um team
+   * @param userId - ID do usuário (pode ser profile ID ou admin ID)
+   * @param increment - Valor a ser incrementado (padrão: 1)
    */
-  async incrementTeamUsage(teamId: string, increment: number = 1): Promise<Team> {
+  async incrementTeamUsage(userId: string, increment: number = 1): Promise<Team> {
     try {
+      // Primeiro, buscar o team pelo admin_id
+      let team = await this.getTeamByAdminId(userId);
+      
+      // Se não encontrou, pode ser que o userId seja o profile ID
+      if (!team) {
+        this.logger.log(`Team não encontrado por admin_id ${userId}, tentando buscar por profile...`);
+        
+        // Buscar profile pelo ID
+        const { data: profile, error: profileError } = await this.supabaseService
+          .getClient()
+          .from('profiles')
+          .select('id, user_id')
+          .eq('id', userId)
+          .single();
+
+        if (profileError || !profile) {
+          throw new NotFoundException(`Profile não encontrado: ${userId}`);
+        }
+
+        // Buscar team pelo user_id do profile (que é o admin_id)
+        team = await this.getTeamByAdminId(profile.user_id);
+        
+        if (!team) {
+          throw new NotFoundException(`Team não encontrado para profile ${userId} (user_id: ${profile.user_id})`);
+        }
+      }
+
+      // Incrementar o contador de mensagens
+      const newMessagesUsed = (team.messages_used || 0) + increment;
+      
       const { data, error } = await this.supabaseService
         .getClient()
         .from('teams')
         .update({
-          messages_used: this.supabaseService.getClient().rpc('increment', {
-            table_name: 'teams',
-            column_name: 'messages_used',
-            id: teamId,
-            increment_value: increment,
-          }),
-          updated_at: new Date().toISOString(),
+          messages_used: newMessagesUsed,
         })
-        .eq('id', teamId)
+        .eq('id', team.id)
         .select()
         .single();
 
@@ -152,10 +226,10 @@ export class TeamsService {
         throw error;
       }
 
-      this.logger.log(`Uso incrementado para team ${teamId}: +${increment} mensagens`);
+      this.logger.log(`Uso incrementado para team ${team.id} (admin_id: ${team.admin_id}): +${increment} mensagens`);
       return data as Team;
     } catch (error) {
-      this.logger.error(`Erro ao incrementar uso do team ${teamId}:`, error);
+      this.logger.error(`Erro ao incrementar uso do team para usuário ${userId}:`, error);
       throw error;
     }
   }
@@ -212,6 +286,7 @@ export class TeamsService {
         .from('teams')
         .insert({
           name: createData.name,
+          admin_id: createData.admin_id,
           messages: createData.messages,
           messages_used: 0,
           metadata: createData.metadata || {},
@@ -225,7 +300,7 @@ export class TeamsService {
         throw error;
       }
 
-      this.logger.log(`Team criado: ${data.id} - ${data.name}`);
+      this.logger.log(`Team criado: ${data.id} - ${data.name} (admin_id: ${data.admin_id})`);
       return data as Team;
     } catch (error) {
       this.logger.error('Erro ao criar team:', error);
@@ -461,8 +536,9 @@ export class TeamsService {
         return;
       }
 
-      await this.incrementTeamUsage(team.id, 1);
-      this.logger.log(`Contador de mensagens incrementado para telefone: ${phoneNumber}`);
+      // Passar o admin_id do team (que é o ID do usuário)
+      await this.incrementTeamUsage(team.admin_id, 1);
+      this.logger.log(`Contador de mensagens incrementado para telefone: ${phoneNumber} (admin_id: ${team.admin_id})`);
     } catch (error) {
       this.logger.error(`Erro ao incrementar contador de mensagens para ${phoneNumber}:`, error);
     }
@@ -491,7 +567,7 @@ export class TeamsService {
   async createOrUpdateTeamForUser(userId: string, phoneNumber: string, messageLimit: number = 100): Promise<Team> {
     try {
       // Verifica se já existe um team para este usuário
-      let team = await this.getTeamByUserId(userId);
+      let team = await this.getTeamByAdminId(userId);
       
       if (team) {
         // Atualiza o limite se necessário
@@ -504,6 +580,7 @@ export class TeamsService {
       // Cria novo team
       const teamData: CreateTeamDto = {
         name: `Team ${phoneNumber}`,
+        admin_id: userId,
         messages: messageLimit,
         metadata: {
           user_id: userId,

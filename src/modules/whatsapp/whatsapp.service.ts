@@ -12,18 +12,22 @@ import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
 import { TeamsService } from '../teams/teams.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { SupabaseService } from '../supabase/supabase.service';
 import { WebhookDto } from './dto/webhook.dto';
 
 interface ConversationState {
   isWaitingForName: boolean;
   isWaitingForEmail: boolean;
   isWaitingForConfirmation: boolean;
+  isWaitingForBrazilianName: boolean;
   isInUpgradeFlow: boolean;
   isInRegistrationFlow: boolean;
   registrationStep: 'introduction' | 'name' | 'email' | 'confirmation' | 'completed';
   upgradeStep: 'introduction' | 'plan_selection' | 'frequency_selection' | 'payment_info' | 'confirmation';
   selectedPlan?: string;
   selectedFrequency?: 'monthly' | 'yearly';
+  isInAnalysis: boolean;
+  analysisStartTime?: number;
   pendingDocument?: any;
   jurisdiction?: string;
   ddi?: string;
@@ -59,6 +63,7 @@ export class WhatsAppService {
     private jurisdictionService: JurisdictionService,
     private teamsService: TeamsService,
     private prismaService: PrismaService,
+    private supabaseService: SupabaseService,
   ) {}
 
   // Métodos auxiliares para buscar planos dinamicamente
@@ -172,9 +177,6 @@ export class WhatsAppService {
     }
   }
 
-  /**
-   * Gerencia o fluxo de cadastro para usuários não registrados
-   */
   private async handleUnregisteredUser(
     phone: string, 
     text: string, 
@@ -189,7 +191,7 @@ export class WhatsAppService {
         await this.sendMessage(phone, response);
         return;
       }
-
+      
       // Para PT/ES, fluxo de cadastro via WhatsApp
       if (!state.isInRegistrationFlow) {
         // Iniciar fluxo de cadastro
@@ -214,8 +216,8 @@ export class WhatsAppService {
         // Validar nome
         if (text.length < 2) {
           await this.sendMessage(phone, '❌ Por favor, informe um nome válido com pelo menos 2 caracteres.');
-          return;
-        }
+        return;
+      }
 
         // Solicitar email
         const response = `✅ Obrigado, ${text}!\n\n📧 Agora preciso do seu e-mail para completar o cadastro:`;
@@ -259,10 +261,10 @@ export class WhatsAppService {
           // Recomeçar cadastro
           const response = '🔄 Cadastro cancelado. Vamos recomeçar!\n\n📝 Qual é o seu nome completo?';
           await this.sendMessage(phone, response);
-          this.setConversationState(phone, {
+          this.setConversationState(phone, { 
             isInRegistrationFlow: true,
             registrationStep: 'name',
-            isWaitingForName: true,
+            isWaitingForName: true, 
             isWaitingForEmail: false,
             isWaitingForConfirmation: false,
             isInUpgradeFlow: false,
@@ -282,9 +284,6 @@ export class WhatsAppService {
     }
   }
 
-  /**
-   * Finaliza o cadastro do usuário e cria assinatura Fremium
-   */
   private async finalizeUserRegistration(
     phone: string, 
     state: ConversationState, 
@@ -319,6 +318,182 @@ export class WhatsAppService {
     }
   }
 
+  // ===== MÉTODOS PARA USUÁRIOS BRASILEIROS =====
+
+  private async checkBrazilianUserSession(phone: string): Promise<{
+    session: any | null;
+    needsWelcomeBack: boolean;
+    timeSinceLastMessage: number;
+  }> {
+    try {
+      // Remove o DDI (55) e caracteres não numéricos
+      const cleanPhone = phone.replace(/\D/g, '');
+      const phoneWithoutDDI = cleanPhone.startsWith('55') ? cleanPhone.substring(2) : cleanPhone;
+      
+      this.logger.log(`🔍 Verificando sessão brasileira para: ${phoneWithoutDDI}`);
+      
+      // Buscar na tabela atendimento_wpps
+      const { data, error } = await this.supabaseService
+        .getClient()
+        .from('atendimento_wpps')
+        .select('*')
+        .eq('number', phoneWithoutDDI)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          this.logger.log(`👤 Sessão não encontrada para: ${phoneWithoutDDI}`);
+          return {
+            session: null,
+            needsWelcomeBack: false,
+            timeSinceLastMessage: 0
+          };
+        }
+        throw error;
+      }
+
+      this.logger.log(`✅ Sessão encontrada: ${data.id} - ${data.name}`);
+      
+      // Verificar se precisa de mensagem de boas-vindas (mais de 1 hora)
+      const ONE_HOUR_MS = 60 * 60 * 1000; // 1 hora em milissegundos
+      const lastMessageTime = data.last_message_sent ? new Date(data.last_message_sent).getTime() : 0;
+      const currentTime = Date.now();
+      const timeSinceLastMessage = currentTime - lastMessageTime;
+      const needsWelcomeBack = timeSinceLastMessage > ONE_HOUR_MS;
+      
+      if (needsWelcomeBack) {
+        this.logger.log(`⏰ Usuário ${data.name} precisa de mensagem de boas-vindas (última mensagem há ${Math.round(timeSinceLastMessage / (60 * 1000))} minutos)`);
+      }
+      
+      return {
+        session: data,
+        needsWelcomeBack,
+        timeSinceLastMessage
+      };
+    } catch (error) {
+      this.logger.error(`❌ Erro ao verificar sessão brasileira ${phone}:`, error);
+      return {
+        session: null,
+        needsWelcomeBack: false,
+        timeSinceLastMessage: 0
+      };
+    }
+  }
+
+  private async handleWelcomeBackMessage(phone: string, session: any): Promise<void> {
+    try {
+      const message = `Bem vindo novamente ${session.name}, em que posso te ajudar?`;
+      await this.sendMessage(phone, message);
+      
+      // Atualizar last_message_sent
+      await this.updateLastMessageSent(phone);
+      
+      this.logger.log(`👋 Mensagem de boas-vindas enviada para ${session.name}`);
+    } catch (error) {
+      this.logger.error(`❌ Erro ao enviar mensagem de boas-vindas para ${phone}:`, error);
+    }
+  }
+
+  private async updateLastMessageSent(phone: string): Promise<void> {
+    try {
+      // Remove o DDI (55) e caracteres não numéricos
+      const cleanPhone = phone.replace(/\D/g, '');
+      const phoneWithoutDDI = cleanPhone.startsWith('55') ? cleanPhone.substring(2) : cleanPhone;
+      
+      // Atualizar campo last_message_sent na tabela atendimento_wpps
+      const { error } = await this.supabaseService
+        .getClient()
+        .from('atendimento_wpps')
+        .update({ last_message_sent: new Date().toISOString() })
+        .eq('number', phoneWithoutDDI);
+
+      if (error) {
+        throw error;
+      }
+
+      this.logger.log(`✅ Campo last_message_sent atualizado para ${phoneWithoutDDI}`);
+    } catch (error) {
+      this.logger.error(`❌ Erro ao atualizar last_message_sent para ${phone}:`, error);
+    }
+  }
+
+  private async createBrazilianUserSession(phone: string, name: string): Promise<any> {
+    try {
+      // Remove o DDI (55) e caracteres não numéricos
+      const cleanPhone = phone.replace(/\D/g, '');
+      const phoneWithoutDDI = cleanPhone.startsWith('55') ? cleanPhone.substring(2) : cleanPhone;
+      
+      this.logger.log(`📝 Criando sessão brasileira: ${name} - ${phoneWithoutDDI}`);
+      
+      // Inserir na tabela atendimento_wpps
+      const { data, error } = await this.supabaseService
+        .getClient()
+        .from('atendimento_wpps')
+        .insert({
+          name: name,
+          number: phoneWithoutDDI
+        })
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      this.logger.log(`✅ Sessão criada com sucesso: ${data.id}`);
+      return data;
+    } catch (error) {
+      this.logger.error(`❌ Erro ao criar sessão brasileira ${phone}:`, error);
+      throw error;
+    }
+  }
+
+  private async handleBrazilianUserWelcome(
+    phone: string, 
+    text: string, 
+    state: ConversationState
+  ): Promise<void> {
+    try {
+      // Verificar se já está no fluxo de coleta de nome
+      if (state.isWaitingForBrazilianName) {
+        // Usuário já enviou o nome
+        if (text.length < 2) {
+          await this.sendMessage(phone, '❌ Por favor, informe um nome válido com pelo menos 2 caracteres.');
+          return;
+        }
+
+        // Criar sessão na tabela atendimento_wpps
+        await this.createBrazilianUserSession(phone, text);
+        
+        // Mensagem de boas-vindas
+        const response = `🎉 Olá, ${text}! Seja bem-vindo ao Chat LawX!\n\n🇧🇷 Sou seu assistente jurídico especializado em legislação brasileira.\n\n💬 Como posso ajudá-lo hoje?\n\nVocê pode:\n• Fazer perguntas sobre direito\n• Enviar documentos para análise\n• Solicitar orientações jurídicas\n\nDigite "MENU" para ver todas as opções disponíveis.`;
+        
+        await this.sendMessage(phone, response);
+        
+        // Limpar estado da conversa
+        this.clearConversationState(phone);
+        
+        this.logger.log(`✅ Usuário brasileiro ${phone} iniciou sessão com nome: ${text}`);
+        return;
+      }
+
+      // Primeira mensagem - enviar boas-vindas e solicitar nome
+      const response = `🇧🇷 Olá! Seja bem-vindo ao Chat LawX!\n\nSou seu assistente jurídico especializado em legislação brasileira.\n\nPara personalizar seu atendimento, preciso saber seu nome.\n\n📝 Qual é o seu nome completo?`;
+      
+      await this.sendMessage(phone, response);
+      
+      // Atualizar estado da conversa
+      this.setConversationState(phone, {
+        ...state,
+        isWaitingForBrazilianName: true
+      });
+      
+    } catch (error) {
+      this.logger.error('Erro no fluxo de boas-vindas brasileiro:', error);
+      await this.sendMessage(phone, '❌ Ocorreu um erro. Tente novamente mais tarde.');
+    }
+  }
+
   private async processMessage(message: any): Promise<void> {
     try {
       if (!message.key?.remoteJid) {
@@ -336,48 +511,267 @@ export class WhatsAppService {
       const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
       this.logger.log(`Jurisdição detectada: ${jurisdiction.jurisdiction} para ${phone}`);
 
-      // Verificar se é usuário brasileiro (já cadastrado no Supabase)
-      const isBrazilianUser = jurisdiction.jurisdiction === 'BR';
-      
-      let user: User | null = null;
-      if (isBrazilianUser) {
-        // Para usuários brasileiros, buscar no Supabase (tabela profiles)
-        user = await this.usersService.getOrCreateUser(phone);
-      } else {
-        // Para Portugal/Espanha, criar ou buscar usuário local
-        user = await this.usersService.getOrCreateUser(phone);
-      }
-      
+      // Extrair texto da mensagem
+      const text = message.message?.conversation || '';
       const state = this.getConversationState(phone);
       this.logger.log('💬 Estado da conversa:', JSON.stringify(state, null, 2));
 
-      // Extrair texto da mensagem
-      const text = message.message?.conversation || '';
+      // Roteamento por jurisdição
+      switch (jurisdiction.jurisdiction) {
+        case 'BR':
+          await this.processBrazilianMessage(message, phone, text, state, jurisdiction);
+          break;
+        case 'PT':
+          await this.processPortugueseMessage(message, phone, text, state, jurisdiction);
+          break;
+        case 'ES':
+          await this.processSpanishMessage(message, phone, text, state, jurisdiction);
+          break;
+        default:
+          this.logger.warn(`Jurisdição não suportada: ${jurisdiction.jurisdiction}`);
+          await this.sendMessage(phone, 'Desculpe, sua jurisdição não é suportada no momento.');
+      }
+    } catch (error) {
+      this.logger.error('Erro ao processar mensagem:', error);
+    }
+  }
 
+  private async processBrazilianMessage(message: any, phone: string, text: string, state: ConversationState, jurisdiction: any): Promise<void> {
+    try {
+      this.logger.log('🇧🇷 Processando mensagem de usuário brasileiro...');
+      
+      // Buscar usuário no Supabase (tabela profiles)
+      const user = await this.usersService.getOrCreateUser(phone);
+      
       // Verificar se usuário não está registrado
       if (!user || !user.is_registered) {
-        await this.handleUnregisteredUser(phone, text, state, jurisdiction, isBrazilianUser);
+        await this.handleUnregisteredUser(phone, text, state, jurisdiction, true);
         return;
       }
 
-      // Processar imagem se presente
+      // Verificar se usuário tem sessão ativa na tabela atendimento_wpps
+      const sessionResult = await this.checkBrazilianUserSession(phone);
+      
+      if (!sessionResult.session) {
+        // Usuário não tem sessão ativa - iniciar fluxo de boas-vindas
+        await this.handleBrazilianUserWelcome(phone, text, state);
+        return;
+      }
+      
+      // Usuário tem sessão ativa - verificar se precisa de mensagem de boas-vindas
+      if (sessionResult.needsWelcomeBack) {
+        // Usuário tem sessão mas passou 1 hora - enviar mensagem de boas-vindas
+        await this.handleWelcomeBackMessage(phone, sessionResult.session);
+        // Continuar processamento normal após mensagem
+      } else {
+        this.logger.log(`✅ Usuário brasileiro com sessão ativa: ${sessionResult.session.name}`);
+      }
+      
+      // Atualizar last_message_sent para esta interação
+      await this.updateLastMessageSent(phone);
+
+      // PRIMEIRO: Verificar se está em análise de documento
+      if (state.isInAnalysis) {
+        // Verificar timeout (10 minutos)
+        if (this.checkAnalysisTimeout(state)) {
+          await this.sendMessage(phone, this.getAnalysisTimeoutMessage('BR'));
+          this.setConversationState(phone, { ...state, isInAnalysis: false, analysisStartTime: undefined });
+          return;
+        }
+
+        // Se está em análise, processar confirmações ou documentos
+        if (await this.isConfirmationMessage(message, 'BR')) {
+          await this.handleAnalysisConfirmation(message, phone, null, 'BR');
+          return;
+        }
+        
+        if (message.message?.documentMessage) {
+          // Processar documento normalmente (mantém isInAnalysis = true)
+          await this.handleDocumentMessage(message, null, phone);
+          return;
+        }
+        
+        // Para textos durante análise: avisar que só aceita PDF/DOCX
+        if (message.message?.textMessage) {
+          await this.handleTextDuringAnalysis(phone, 'BR');
+          return;
+        }
+        
+        // Ignorar outras mensagens
+        return;
+      }
+
+      // Processar por tipo de mídia
       if (message.message?.imageMessage) {
-        console.log('🖼️ Processando imagem');
+        this.logger.log('🖼️ Processando imagem jurídica (BR)');
         await this.handleImageMessage(message, user, phone);
         return;
       }
 
-      // Processar áudio se presente
       if (message.message?.audioMessage) {
-        console.log('🎵 Processando áudio');
+        this.logger.log('🎵 Processando áudio jurídico (BR)');
         await this.handleAudioMessage(message, user, phone);
         return;
       }
 
-      // Processar texto
+      if (message.message?.documentMessage) {
+        this.logger.log('📄 Processando documento jurídico (BR)');
+        await this.handleDocumentMessage(message, user, phone);
+        return;
+      }
+
+      // Processar texto - fluxo específico para usuários brasileiros registrados
+      this.logger.log('📝 Processando texto jurídico (BR)');
       await this.handleTextMessage(text, user, phone, state);
+      
     } catch (error) {
-      this.logger.error('Erro ao processar mensagem:', error);
+      this.logger.error('Erro ao processar mensagem brasileira:', error);
+      await this.sendMessage(phone, '❌ Ocorreu um erro ao processar sua mensagem. Tente novamente.');
+    }
+  }
+
+  private async processPortugueseMessage(message: any, phone: string, text: string, state: ConversationState, jurisdiction: any): Promise<void> {
+    try {
+      this.logger.log('🇵🇹 Processando mensagem de usuário português...');      
+      // Buscar ou criar usuário local
+      const user = await this.usersService.getOrCreateUser(phone);
+      
+      // Verificar se usuário não está registrado
+      if (!user || !user.is_registered) {
+        await this.handleUnregisteredUser(phone, text, state, jurisdiction, false);
+        return;
+      }
+
+      // PRIMEIRO: Verificar se está em análise de documento
+      if (state.isInAnalysis) {
+        // Verificar timeout (10 minutos)
+        if (this.checkAnalysisTimeout(state)) {
+          await this.sendMessage(phone, this.getAnalysisTimeoutMessage('PT'));
+          this.setConversationState(phone, { ...state, isInAnalysis: false, analysisStartTime: undefined });
+          return;
+        }
+
+        // Se está em análise, processar confirmações ou documentos
+        if (await this.isConfirmationMessage(message, 'PT')) {
+          await this.handleAnalysisConfirmation(message, phone, null, 'PT');
+          return;
+        }
+        
+        if (message.message?.documentMessage) {
+          // Processar documento normalmente (mantém isInAnalysis = true)
+          await this.handleDocumentMessage(message, null, phone);
+          return;
+        }
+        
+        // Para textos durante análise: avisar que só aceita PDF/DOCX
+        if (message.message?.textMessage) {
+          await this.handleTextDuringAnalysis(phone, 'PT');
+          return;
+        }
+        
+        // Ignorar outras mensagens
+        return;
+      }
+
+      // Processar por tipo de mídia
+      if (message.message?.imageMessage) {
+        this.logger.log('🖼️ Processando imagem jurídica (PT)');
+        await this.handleImageMessage(message, user, phone);
+        return;
+      }
+
+      if (message.message?.audioMessage) {
+        this.logger.log('🎵 Processando áudio jurídico (PT)');
+        await this.handleAudioMessage(message, user, phone);
+        return;
+      }
+
+      if (message.message?.documentMessage) {
+        this.logger.log('📄 Processando documento jurídico (PT)');
+        await this.handleDocumentMessage(message, user, phone);
+        return;
+      }
+
+      // Processar texto
+      this.logger.log('📝 Processando texto jurídico (PT)');
+      await this.handleTextMessage(text, user, phone, state);
+
+    } catch (error) {
+      this.logger.error('Erro ao processar mensagem portuguesa:', error);
+      await this.sendMessage(phone, '❌ Ocorreu um erro ao processar sua mensagem. Tente novamente.');
+    }
+  }
+
+  private async processSpanishMessage(message: any, phone: string, text: string, state: ConversationState, jurisdiction: any): Promise<void> {
+    try {
+      this.logger.log('🇪🇸 Processando mensagem de usuário espanhol...');
+
+      // Buscar ou criar usuário local
+      const user = await this.usersService.getOrCreateUser(phone);
+      
+      // Verificar se usuário não está registrado
+      if (!user || !user.is_registered) {
+        await this.handleUnregisteredUser(phone, text, state, jurisdiction, false);
+        return;
+      }
+
+      // PRIMEIRO: Verificar se está em análise de documento
+      if (state.isInAnalysis) {
+        // Verificar timeout (10 minutos)
+        if (this.checkAnalysisTimeout(state)) {
+          await this.sendMessage(phone, this.getAnalysisTimeoutMessage('ES'));
+          this.setConversationState(phone, { ...state, isInAnalysis: false, analysisStartTime: undefined });
+          return;
+        }
+
+        // Se está em análise, processar confirmações ou documentos
+        if (await this.isConfirmationMessage(message, 'ES')) {
+          await this.handleAnalysisConfirmation(message, phone, null, 'ES');
+          return;
+        }
+        
+        if (message.message?.documentMessage) {
+          // Processar documento normalmente (mantém isInAnalysis = true)
+          await this.handleDocumentMessage(message, null, phone);
+          return;
+        }
+        
+        // Para textos durante análise: avisar que só aceita PDF/DOCX
+        if (message.message?.textMessage) {
+          await this.handleTextDuringAnalysis(phone, 'ES');
+          return;
+        }
+        
+        // Ignorar outras mensagens
+        return;
+      }
+
+      // Processar por tipo de mídia
+      if (message.message?.imageMessage) {
+        this.logger.log('🖼️ Processando imagem jurídica (ES)');
+        await this.handleImageMessage(message, user, phone);
+        return;
+      }
+
+      if (message.message?.audioMessage) {
+        this.logger.log('🎵 Processando áudio jurídico (ES)');
+        await this.handleAudioMessage(message, user, phone);
+        return;
+      }
+
+      if (message.message?.documentMessage) {
+        this.logger.log('📄 Processando documento jurídico (ES)');
+        await this.handleDocumentMessage(message, user, phone);
+        return;
+      }
+
+      // Processar texto
+      this.logger.log('📝 Processando texto jurídico (ES)');
+      await this.handleTextMessage(text, user, phone, state);
+
+    } catch (error) {
+      this.logger.error('Erro ao processar mensagem espanhola:', error);
+      await this.sendMessage(phone, '❌ Ocorreu un error al procesar tu mensaje. Inténtalo de nuevo.');
     }
   }
 
@@ -423,9 +817,184 @@ export class WhatsAppService {
     }
   }
 
-  /**
-   * Salva documento jurídico no banco de dados apropriado
-   */
+  private async handleTextMessage(text: string, user: User | null, phone: string, state: ConversationState): Promise<void> {
+    try {
+      this.logger.log('📝 Processando mensagem de texto jurídica:', text);
+
+      // 0. Verificar se é comando "menu"
+      if (text.toLowerCase().trim() === 'menu') {
+        await this.showLegalMenu(phone);
+        return;
+      }
+
+      // 1. Verificar se há sessão de upgrade ativa ou estado de upgrade
+      if (user) {
+        const activeSession = await this.upgradeSessionsService.getActiveSession(user.id);
+        if (activeSession || state.isInUpgradeFlow) {
+          this.logger.log('🔄 Sessão de upgrade ativa, processando com IA...');
+          await this.processUpgradeFlowWithAI(phone, user.id, text, activeSession, state);
+          return;
+        }
+
+        // 2. Verificar se é uma nova intenção de upgrade
+        const upgradeIntent = await this.detectUpgradeIntent(text, user.id);
+        if (upgradeIntent.isUpgradeIntent) {
+          this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
+          await this.handleUpgradeFlow(phone, user.id, text);
+          return;
+        }
+      }
+
+      // 3. Processar consulta jurídica
+      await this.handleLegalConsultation(text, phone, user);
+
+    } catch (error) {
+      this.logger.error('❌ Erro ao processar mensagem de texto:', error);
+      await this.sendMessage(phone, '❌ Erro ao processar sua mensagem. Tente novamente.');
+    }
+  }
+  
+  private async handleAudioMessage(message: any, user: User, phone: string): Promise<void> {
+    try {
+      this.logger.log('🎵 Processando mensagem de áudio...');
+
+      this.logger.log('🎵 Mensagem de áudio tipo:', JSON.stringify(message.message?.base64, null, 2));
+      // Enviar mensagem de processamento
+      await this.sendMessage(phone, '🎵 Processando seu áudio... Aguarde um momento.');
+      
+      let audioBuffer: Buffer | null = null;
+
+      if(message.message?.base64) {
+        audioBuffer = await this.processAudioBase64(message);
+      if (!audioBuffer) {
+        await this.sendMessage(phone, '❌ Não consegui processar o áudio. Tente novamente.');
+        return;
+        }
+      } else if(message.audioMessage) {
+        audioBuffer = await this.processAudioViaEvolutionAPI(message);
+        if (!audioBuffer) {
+          await this.sendMessage(phone, '❌ Não consegui processar o áudio. Tente novamente.');
+          return;
+        }
+      }
+
+      // Upload do áudio para Supabase Storage
+      const audioUrl = await this.uploadService.uploadAudioFile(audioBuffer, 'audio.mp3');
+      
+      // Processar áudio para consulta jurídica
+      const transcribedText = await this.aiService.processAudioForLegalConsultation(audioBuffer);
+      
+      // Detectar jurisdição
+      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      
+      // Gerar resposta jurídica
+      const response = await this.aiService.generateLegalResponse(
+        transcribedText,
+        phone,
+        user?.id,
+        undefined // Sem conteúdo de documento
+      );
+      
+      await this.sendMessage(phone, response);
+      
+    } catch (error) {
+      this.logger.error('❌ Erro ao processar áudio:', error);
+      
+      // Verificar se é erro de limite atingido (PRIORIDADE MÁXIMA)
+      if (error.message && error.message.includes('Limite de mensagens atingido')) {
+        await this.handleLimitReachedMessage(phone, user, error.message);
+        return;
+      }
+      
+      // Verificar se é erro de validação específico
+      if (error.message.includes('Áudio não contém lançamento financeiro:')) {
+        await this.sendMessage(phone, `❌ ${error.message}\n\n🎵 **Envie um áudio válido:**\n• "Aluguel 2000"\n• "Supermercado 150"\n• "Salário 5000"\n• "Freelance 800"\n\nFale claramente o valor e a descrição do lançamento.`);
+        return;
+      }
+      
+      // Verificar se é erro de formato de áudio
+      if (error.message.includes('Invalid file format') || error.message.includes('formato')) {
+        await this.sendMessage(phone, `❌ **Problema com o formato do áudio**\n\n🎵 **Solução:**\n• Envie um áudio mais curto (máximo 30 segundos)\n• Fale mais claramente\n• Evite ruídos de fundo\n• Tente novamente em alguns segundos\n\n**Exemplo:** "Aluguel 2000"`);
+        return;
+      }
+      
+      // Verificar se é erro de transcrição
+      if (error.message.includes('transcrição') || error.message.includes('transcription')) {
+        await this.sendMessage(phone, `❌ **Erro na transcrição do áudio**\n\n🎵 **Dicas:**\n• Fale mais devagar e claramente\n• Evite ruídos de fundo\n• Use frases simples como "Aluguel 2000"\n• Tente novamente`);
+        return;
+      }
+      
+      await this.sendMessage(phone, '❌ Erro ao processar o áudio. Tente novamente ou fale mais claramente.');
+    }
+  }
+
+  private async handleDocumentMessage(message: any, user: User | null, phone: string): Promise<void> {
+    try {
+      this.logger.log('📄 Processando mensagem de documento jurídico...');
+      
+      // Definir estado de análise
+      const conversationState = this.getConversationState(phone);
+      this.setConversationState(phone, {
+        ...conversationState,
+        isInAnalysis: true,
+        analysisStartTime: Date.now()
+      });
+      
+      // Extrair base64 da mensagem
+      const base64Data = this.extractBase64FromDocumentMessage(message);
+      if (!base64Data) {
+        await this.sendMessage(phone, '❌ Não consegui extrair o documento da mensagem. Tente novamente.');
+        return;
+      }
+
+      // Converter base64 para buffer
+      const documentBuffer = await this.convertBase64ToFile(base64Data, 'unknown');
+
+      // Verificar tamanho do arquivo (limite 20MB)
+      const fileSizeMB = documentBuffer.length / (1024 * 1024);
+      if (fileSizeMB > 20) {
+        await this.sendMessage(phone, '❌ Arquivo muito grande. O limite é de 20MB. Envie um arquivo menor.');
+        return;
+      }
+
+      // Detectar tipo de documento
+      const mimeType = this.detectDocumentType(documentBuffer);
+      if (!this.isSupportedDocumentType(mimeType)) {
+        await this.sendMessage(phone, '❌ Tipo de documento não suportado. Envie apenas PDF ou DOCX.');
+        return;
+      }
+
+      await this.sendMessage(phone, '🔍 Estou analisando o documento jurídico...');
+
+      // Gerar nome do arquivo
+      const fileName = this.generateDocumentFileName(mimeType);
+
+      // Upload para Supabase Storage
+      const fileUrl = await this.uploadService.uploadDocumentFile(documentBuffer, fileName);
+
+      // Enviar para endpoint de análise
+      const analysis = await this.analyzeDocumentWithExternalAPI(fileUrl);
+
+      // Enviar resposta para usuário
+      await this.sendMessage(phone, analysis);
+      
+      // Perguntar se deseja analisar outro documento
+      await this.sendMessage(phone, '\n\n🤔 Deseja analisar outro documento? Responda "sim" ou "não".');
+
+    } catch (error) {
+      this.logger.error('❌ Erro ao processar documento:', error);
+      
+      // Verificar se é erro de limite atingido (PRIORIDADE MÁXIMA)
+      if (error.message && error.message.includes('Limite de mensagens atingido')) {
+        await this.handleLimitReachedMessage(phone, user, error.message);
+        return;
+      }
+      
+      // Manter estado de análise e solicitar reenvio
+      await this.sendMessage(phone, '❌ Erro ao analisar o documento. Envie o documento novamente.');
+    }
+  }
+
   private async saveLegalDocument(
     analysis: any,
     jurisdiction: string,
@@ -459,134 +1028,6 @@ export class WhatsAppService {
     }
   }
 
-  private async handleRevenueImage(extractedData: any, user: User, phone: string, imageBuffer: Buffer): Promise<void> {
-    try {
-      // Upload da imagem
-      const imageUrl = await this.uploadService.uploadReceiptImage(imageBuffer, 'revenue.jpg');
-      
-      // Criar receita
-      const revenueData = {
-        user_id: user.id,
-        amount: extractedData.amount,
-        original_amount: extractedData.original_amount,
-        discount_amount: extractedData.discount_amount,
-        category: extractedData.category,
-        date: extractedData.date,
-        image_url: imageUrl,
-        description: extractedData.description,
-        payment_method: extractedData.payment_method,
-        payer_name: extractedData.payer_name,
-        payer_cnpj: extractedData.payer_cnpj,
-        payer_address: extractedData.payer_address,
-        document_type: extractedData.document_type,
-        document_number: extractedData.document_number,
-        revenue_type: extractedData.revenue_type,
-        source: extractedData.source,
-      };
-
-      // TODO: Implementar criação de receita para Chat LawX
-      // const revenue = await this.revenuesService.create(revenueData);
-      
-      // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'consultation');
-      
-      // Enviar confirmação
-      // TODO: Implementar confirmação de receita para Chat LawX
-      // const confirmationMessage = this.formatRevenueConfirmation(revenue);
-      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
-      await this.sendMessage(phone, confirmationMessage);
-      
-      this.logger.log(`✅ Receita criada com sucesso para usuário ${user.id}`);
-      
-    } catch (error) {
-      this.logger.error('❌ Erro ao processar receita:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar a receita. Tente novamente.');
-    }
-  }
-
-  private async handleExpenseImage(extractedData: any, user: User, phone: string, imageBuffer: Buffer): Promise<void> {
-    try {
-      // Upload da imagem
-      const imageUrl = await this.uploadService.uploadReceiptImage(imageBuffer, 'expense.jpg');
-      
-      // Criar despesa
-      const expenseData = {
-        user_id: user.id,
-        amount: extractedData.amount,
-        original_amount: extractedData.original_amount,
-        discount_amount: extractedData.discount_amount,
-        category: extractedData.category,
-        date: extractedData.date,
-        image_url: imageUrl,
-        description: extractedData.description,
-        payment_method: extractedData.payment_method,
-        store_name: extractedData.store_name,
-        store_cnpj: extractedData.store_cnpj,
-        store_address: extractedData.store_address,
-        document_type: extractedData.document_type,
-        document_number: extractedData.document_number,
-      };
-
-      // TODO: Implementar criação de despesa para Chat LawX
-      // const expense = await this.expensesService.create(expenseData);
-      
-      // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'consultation');
-      
-      // Enviar confirmação
-      // TODO: Implementar confirmação de despesa para Chat LawX
-      // const confirmationMessage = this.formatExpenseConfirmation(expense);
-      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
-      await this.sendMessage(phone, confirmationMessage);
-      
-      this.logger.log(`✅ Despesa criada com sucesso para usuário ${user.id}`);
-      
-    } catch (error) {
-      this.logger.error('❌ Erro ao processar despesa:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar a despesa. Tente novamente.');
-    }
-  }
-
-  private async handleTextMessage(text: string, user: User | null, phone: string, state: ConversationState): Promise<void> {
-    try {
-      this.logger.log('📝 Processando mensagem de texto jurídica:', text);
-
-      // 0. Verificar se é comando "menu"
-      if (text.toLowerCase().trim() === 'menu') {
-        await this.showLegalMenu(phone);
-        return;
-      }
-
-      // 1. Verificar se há sessão de upgrade ativa ou estado de upgrade
-      if (user) {
-      const activeSession = await this.upgradeSessionsService.getActiveSession(user.id);
-      if (activeSession || state.isInUpgradeFlow) {
-        this.logger.log('🔄 Sessão de upgrade ativa, processando com IA...');
-        await this.processUpgradeFlowWithAI(phone, user.id, text, activeSession, state);
-        return;
-      }
-
-      // 2. Verificar se é uma nova intenção de upgrade
-      const upgradeIntent = await this.detectUpgradeIntent(text, user.id);
-      if (upgradeIntent.isUpgradeIntent) {
-        this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
-        await this.handleUpgradeFlow(phone, user.id, text);
-        return;
-      }
-      }
-
-      // 3. Processar consulta jurídica
-      await this.handleLegalConsultation(text, phone, user);
-
-    } catch (error) {
-      this.logger.error('❌ Erro ao processar mensagem de texto:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar sua mensagem. Tente novamente.');
-    }
-  }
-
-  /**
-   * Processa consulta jurídica
-   */
   private async handleLegalConsultation(text: string, phone: string, user: User | null): Promise<void> {
     try {
       // Detectar jurisdição
@@ -601,10 +1042,50 @@ export class WhatsAppService {
       );
       
       await this.sendMessage(phone, response);
-
+      
     } catch (error) {
       this.logger.error('Erro ao processar consulta jurídica:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar sua consulta jurídica. Tente novamente.');
+      
+      // Verificar se é erro de limite atingido
+      if (error.message && error.message.includes('Limite de mensagens atingido')) {
+        await this.handleLimitReachedMessage(phone, user, error.message);
+      } else {
+        await this.sendMessage(phone, '❌ Erro ao processar sua consulta jurídica. Tente novamente.');
+      }
+    }
+  }
+
+  private async handleLimitReachedMessage(phone: string, user: User | null, errorMessage: string): Promise<void> {
+    try {
+      // Detectar jurisdição para personalizar mensagem
+      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      
+      if (jurisdiction.jurisdiction === 'BR') {
+        // Mensagem específica para usuários brasileiros
+        const response = `🚫 **Limite de mensagens atingido!**\n\n` +
+          `Você utilizou todas as suas mensagens disponíveis.\n\n` +
+          `💡 **Opções disponíveis:**\n` +
+          `• Entre em contato com seu administrador para aumentar o limite\n` +
+          `• Aguarde o próximo período de renovação\n\n` +
+          `📞 **Suporte:** Entre em contato conosco para mais informações.`;
+        
+        await this.sendMessage(phone, response);
+      } else {
+        // Mensagem para PT/ES com opção de upgrade
+        const response = `🚫 **Limite de mensagens atingido!**\n\n` +
+          `Você utilizou todas as suas mensagens disponíveis.\n\n` +
+          `💡 **Que tal fazer um upgrade?**\n` +
+          `• Acesse planos premium com mensagens ilimitadas\n` +
+          `• Recursos avançados de análise jurídica\n` +
+          `• Suporte prioritário\n\n` +
+          `🔄 Digite "UPGRADE" para ver os planos disponíveis ou "MENU" para outras opções.`;
+        
+        await this.sendMessage(phone, response);
+      }
+      
+    } catch (error) {
+      this.logger.error('Erro ao processar mensagem de limite:', error);
+      await this.sendMessage(phone, '❌ Limite atingido. Entre em contato para mais informações.');
     }
   }
 
@@ -618,156 +1099,14 @@ export class WhatsAppService {
       `• Faça consultas jurídicas por texto\n` +
       `• Análise de riscos em documentos\n` +
       `• Sugestões de cláusulas contratuais\n` +
-      `• Pesquisa de jurisprudência\n\n` +
+      // `• Pesquisa de jurisprudência\n\n` +
       `💡 **Como usar:**\n` +
       `• Digite sua pergunta jurídica\n` +
       `• Envie foto de documento para análise\n` +
-      `• Use "upgrade" para ver planos premium\n\n` +
+      // `• Use "upgrade" para ver planos premium\n\n` +
       `⚠️ *Lembre-se: Este é um assistente informativo. Para casos específicos, consulte um advogado.*`;
     
     await this.sendMessage(phone, menu);
-  }
-
-  private async handleFinancialEntry(text: string, user: User, phone: string, financialEntry: any): Promise<void> {
-    try {
-      this.logger.log('💰 Processando lançamento financeiro:', financialEntry);
-
-      // Extrair dados do texto
-      const extractedData = await this.aiService.extractDataFromText(text);
-      
-      // Verificar se a classificação da IA coincide com a detecção
-      if (extractedData.document_classification !== financialEntry.type) {
-        this.logger.warn('⚠️ Classificação divergente, usando detecção inicial');
-        extractedData.document_classification = financialEntry.type;
-      }
-
-      // Processar baseado no tipo
-      if (extractedData.document_classification === 'revenue') {
-        await this.handleRevenueText(extractedData, user, phone);
-      } else {
-        await this.handleExpenseText(extractedData, user, phone);
-      }
-
-    } catch (error) {
-      this.logger.error('❌ Erro ao processar lançamento financeiro:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar o lançamento. Tente novamente.');
-    }
-  }
-
-  private async handleRevenueText(extractedData: any, user: User, phone: string): Promise<void> {
-    try {
-      // Verificar limites de receitas
-      const limits = await this.usageService.checkLimits(user.id, 'consultation');
-      if (!limits.allowed) {
-        await this.sendMessage(phone, limits.message);
-        return;
-      }
-
-      // Criar receita
-      const revenueData = {
-        user_id: user.id,
-        amount: extractedData.amount,
-        original_amount: extractedData.original_amount,
-        discount_amount: extractedData.discount_amount,
-        category: extractedData.category,
-        date: extractedData.date,
-        image_url: '', // Não há imagem para lançamento via texto
-        description: extractedData.description,
-        payment_method: extractedData.payment_method,
-        payer_name: extractedData.payer_name,
-        payer_cnpj: extractedData.payer_cnpj,
-        payer_address: extractedData.payer_address,
-        document_type: extractedData.document_type,
-        document_number: extractedData.document_number,
-        revenue_type: extractedData.revenue_type,
-        source: extractedData.source,
-      };
-
-      // TODO: Implementar criação de receita para Chat LawX
-      // const revenue = await this.revenuesService.create(revenueData);
-      
-      // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'consultation');
-      
-      // Enviar confirmação
-      // TODO: Implementar confirmação de receita para Chat LawX
-      // const confirmationMessage = this.formatRevenueConfirmation(revenue);
-      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
-      await this.sendMessage(phone, confirmationMessage);
-      
-      this.logger.log(`✅ Receita criada via texto para usuário ${user.id}`);
-      
-    } catch (error) {
-      this.logger.error('❌ Erro ao processar receita via texto:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar a receita. Tente novamente.');
-    }
-  }
-
-  private async handleExpenseText(extractedData: any, user: User, phone: string): Promise<void> {
-    try {
-      // Verificar limites de despesas
-      const limits = await this.usageService.checkLimits(user.id, 'consultation');
-      if (!limits.allowed) {
-        await this.sendMessage(phone, limits.message);
-        await this.sendMessage(phone, 'Qual o plano atenderia suas necessidades nesse momento?');
-        return;
-      }
-
-      // Criar despesa
-      const expenseData = {
-        user_id: user.id,
-        amount: extractedData.amount,
-        original_amount: extractedData.original_amount,
-        discount_amount: extractedData.discount_amount,
-        category: extractedData.category,
-        date: extractedData.date,
-        image_url: '', // Não há imagem para lançamento via texto
-        description: extractedData.description,
-        payment_method: extractedData.payment_method,
-        store_name: extractedData.store_name,
-        store_cnpj: extractedData.store_cnpj,
-        store_address: extractedData.store_address,
-        document_type: extractedData.document_type,
-        document_number: extractedData.document_number,
-      };
-
-      // TODO: Implementar criação de despesa para Chat LawX
-      // const expense = await this.expensesService.create(expenseData);
-      
-      // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'consultation');
-      
-      // Enviar confirmação
-      // TODO: Implementar confirmação de despesa para Chat LawX
-      // const confirmationMessage = this.formatExpenseConfirmation(expense);
-      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
-      await this.sendMessage(phone, confirmationMessage);
-      
-      this.logger.log(`✅ Despesa criada via texto para usuário ${user.id}`);
-      
-    } catch (error) {
-      this.logger.error('❌ Erro ao processar despesa via texto:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar a despesa. Tente novamente.');
-    }
-  }
-
-  private async detectReportIntent(text: string): Promise<{ isReportRequest: boolean; confidence: number; intent: string } | null> {
-    try {
-      this.logger.log('📊 Detectando intent de relatório:', text);
-      
-      // Usar IA para detectar se é uma solicitação de relatório financeiro
-      const reportDetection = await this.aiService.detectReportIntent(text);
-      
-      if (reportDetection.isReportRequest && reportDetection.confidence > 0.6) {
-        this.logger.log('📊 Intent de relatório detectado:', reportDetection);
-        return reportDetection;
-      }
-      
-      return null;
-    } catch (error) {
-      this.logger.error('❌ Erro ao detectar intent de relatório:', error);
-      return null;
-    }
   }
 
   private async detectUpgradeIntent(text: string, userId: string): Promise<{
@@ -832,7 +1171,7 @@ export class WhatsAppService {
       this.logger.log('📋 Contexto atual:', context);
       
       // Usar IA para analisar a intenção no contexto
-      const aiAnalysis = await this.aiService.analyzeUpgradeIntent(text, context);
+      const aiAnalysis = await this.aiService.analyzePlanUpgradeIntent(text, context);
       
       this.logger.log('🤖 Análise da IA:', aiAnalysis);
       
@@ -846,7 +1185,7 @@ export class WhatsAppService {
     } catch (error) {
       this.logger.error('❌ Erro ao analisar contexto:', error);
       // Fallback para detecção manual
-      return this.fallbackUpgradeIntentDetection(text, session, state);
+      return await this.fallbackUpgradeIntentDetection(text, session, state, 'BR'); // Default para BR
     }
   }
 
@@ -859,7 +1198,7 @@ export class WhatsAppService {
     try {
       this.logger.log('🆕 Detectando novo intent de upgrade...');
       
-      const newUpgradeIntent = await this.aiService.detectNewUpgradeIntent(text);
+      const newUpgradeIntent = await this.aiService.detectNewPlanUpgradeIntent(text);
       
       this.logger.log('🤖 Novo intent detectado:', newUpgradeIntent);
       
@@ -880,12 +1219,40 @@ export class WhatsAppService {
     }
   }
 
-  private fallbackUpgradeIntentDetection(text: string, session: any, state: any): {
+  private async fallbackUpgradeIntentDetection(text: string, session: any, state: any, jurisdiction: string): Promise<{
     isUpgradeIntent: boolean;
     confidence: number;
     intent: 'new_upgrade' | 'continue_upgrade' | 'payment_confirmation' | 'frequency_selection' | 'plan_selection' | 'cancel_upgrade';
     context?: any;
-  } {
+  }> {
+    try {
+      // Usar IA para detectar confirmação/negação
+      const detection = await this.aiService.detectConfirmationOrDenial(text, jurisdiction);
+      
+      // Detecção de cancelamento
+      if (detection.isDenial && detection.confidence > 0.7) {
+        return {
+          isUpgradeIntent: true,
+          confidence: detection.confidence,
+          intent: 'cancel_upgrade',
+          context: { session, state }
+        };
+      }
+      
+      // Detecção de confirmação de pagamento
+      if (detection.isConfirmation && detection.confidence > 0.7) {
+        return {
+          isUpgradeIntent: true,
+          confidence: detection.confidence,
+          intent: 'payment_confirmation',
+          context: { session, state }
+        };
+      }
+    } catch (error) {
+      this.logger.error('❌ Erro ao usar IA para detecção de upgrade, usando fallback:', error);
+    }
+    
+    // Fallback para detecção simples
     const lowerText = text.toLowerCase();
     
     // Detecção de cancelamento
@@ -940,302 +1307,6 @@ export class WhatsAppService {
       confidence: 0,
       intent: 'new_upgrade'
     };
-  }
-
-  private async handleReportRedirect(phone: string, reportIntent: { isReportRequest: boolean; confidence: number; intent: string }): Promise<void> {
-    try {
-      this.logger.log('📊 Redirecionando para app:', reportIntent);
-      
-      const appMessage = `📱 **Relatórios e Dashboard Completo!**
-
-🎯 **Para acessar seus relatórios financeiros completos, baixe nosso app:**
-
-🍎 **App Store (iOS):**
-https://apps.apple.com/app/mepoupebot
-
-🤖 **Google Play (Android):**
-https://play.google.com/store/apps/details?id=com.mepoupebot.app
-
-📊 **No app você terá acesso a:**
-• Relatórios detalhados de receitas e despesas
-• Gráficos e análises visuais
-• Filtros por período e categoria
-• Exportação de dados
-• Dashboard completo em tempo real
-• Notificações e alertas
-
-💡 **Dica:** O app é gratuito e sincroniza automaticamente com suas mensagens do WhatsApp!`;
-
-      await this.sendMessage(phone, appMessage);
-      this.logger.log(`✅ Redirecionamento para app enviado para ${phone}`);
-
-    } catch (error) {
-      this.logger.error('❌ Erro ao redirecionar para app:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar solicitação. Tente novamente.');
-    }
-  }
-
-  private async showMenu(phone: string): Promise<void> {
-    const menuMessage = `🤖 *MENU DO MEPOUPEBOT* 🤖
-
-*FUNCIONALIDADES DISPONÍVEIS:*
-
-📸 *REGISTRAR DESPESAS/RECEITAS:*
-• Envie fotos de comprovantes, recibos, notas fiscais
-• Envie áudios descrevendo suas despesas ou receitas  
-• Digite mensagens como "Compra no mercado R$ 150" ou "Salário R$ 3000"
-
-📊 *RELATÓRIOS E CONSULTAS:*
-• "hoje" ou "gastos de hoje" - Ver despesas de hoje
-• "ontem" ou "gastos de ontem" - Ver despesas de ontem
-• "semana" ou "gastos da semana" - Relatório semanal
-• "mês" ou "gastos do mês" - Relatório mensal
-• "22/07/2025" - Data específica
-• "receitas" - Ver suas receitas
-• "balanço" - Resumo geral
-
-💡 *DICAS E AJUDA:*
-• "dicas" - Dicas de economia
-• "como economizar" - Sugestões práticas
-• "orçamento" - Ajuda com planejamento
-
-🚀 *UPGRADE E PLANOS:*
-• "upgrade" ou "planos" - Conhecer planos premium
-• "limites" - Ver seus limites atuais
-
-*Como usar:* Basta digitar qualquer comando acima ou conversar naturalmente comigo! 😊
-
-*Exemplo:* "Quanto gastei hoje?" ou "Preciso de dicas para economizar"`;
-
-    await this.sendMessage(phone, menuMessage);
-  }
-
-  private async handleReportRequest(phone: string, userId: string, reportRequest: { type: 'today' | 'week' | 'month' | 'custom' | 'status'; date?: string }, originalMessage: string): Promise<void> {
-    try {
-      // Verificar limites de relatórios
-      const limits = await this.usageService.checkLimits(userId, 'consultation');
-      if (!limits.allowed) {
-        await this.sendMessage(phone, limits.message);
-        return;
-      }
-
-      // Incrementar contador de uso
-      await this.usageService.incrementUsage(userId, 'consultation');
-
-      let reportData: any;
-      let reportMessage: string;
-
-      if (reportRequest.type === 'status') {
-        // Relatório de status/uso
-        const usageSummary = await this.usageService.getUsageSummary(userId);
-        reportMessage = await this.aiService.generateResponse(originalMessage, usageSummary);
-      } else {
-        // Relatório financeiro completo (receitas + despesas)
-        // TODO: Implementar relatórios para Chat LawX
-        // const [expenseReport, revenueReport] = await Promise.all([
-        //   this.expensesService.generateExpenseReport(userId, reportRequest.type, reportRequest.date),
-        //   this.revenuesService.generateRevenueReport(userId, reportRequest.type, reportRequest.date)
-        // ]);
-
-        // TODO: Implementar relatório financeiro para Chat LawX
-        // const financialReportData = {
-        //   period: expenseReport.period,
-        //   total_revenue: revenueReport.total || 0,
-        //   total_expenses: expenseReport.total || 0,
-        //   net_income: (revenueReport.total || 0) - (expenseReport.total || 0),
-        //   revenue_by_category: revenueReport.byCategory || {},
-        //   expense_by_category: expenseReport.byCategory || {},
-        //   revenue_count: revenueReport.count || 0,
-        //   expense_count: expenseReport.count || 0,
-        //   top_revenues: revenueReport.topRevenues || [],
-        //   top_expenses: expenseReport.topExpenses || [],
-        //   revenue_by_payment_method: revenueReport.byPaymentMethod || {},
-        //   expense_by_payment_method: expenseReport.byPaymentMethod || {},
-        // };
-
-        // reportMessage = await this.aiService.generateFinancialReportResponse(financialReportData, originalMessage);
-        reportMessage = '📊 Relatório de uso do Chat LawX:\n\n' + await this.aiService.generateResponse(originalMessage, 'Relatório de uso do sistema');
-      }
-
-      await this.sendMessage(phone, reportMessage);
-      this.logger.log(`✅ Relatório enviado para usuário ${userId}`);
-
-    } catch (error) {
-      this.logger.error('❌ Erro ao gerar relatório:', error);
-      await this.sendMessage(phone, '❌ Erro ao gerar o relatório. Tente novamente.');
-    }
-  }
-
-  /**
-   * Formata data preservando o dia original (resolve problema de timezone)
-   */
-  private formatDatePreservingDay(dateInput: string | Date): string {
-    try {
-      if (typeof dateInput === 'string') {
-        // Se é string, converter para Date preservando a data original
-        this.logger.log('🔍 Data original:', dateInput);
-        
-        // Extrair componentes da data (YYYY-MM-DD)
-        const [year, month, day] = dateInput.split('-').map(Number);
-        
-        // Criar Date com componentes locais (não UTC)
-        const dataObj = new Date(year, month - 1, day); // month - 1 porque getMonth() retorna 0-11
-        this.logger.log('🔍 Data convertida:', dataObj.toISOString());
-        
-        if (isNaN(dataObj.getTime())) {
-          throw new Error('Data inválida');
-        }
-        
-        const formatador = new Intl.DateTimeFormat("pt-BR");
-        const dataFormatada = formatador.format(dataObj);
-        this.logger.log('🔍 Data formatada:', dataFormatada);
-        return dataFormatada;
-      } else {
-        // Se já é Date, formatar diretamente
-        const formatador = new Intl.DateTimeFormat("pt-BR");
-        const dataFormatada = formatador.format(dateInput);
-        this.logger.log('🔍 Data formatada:', dataFormatada);
-        return dataFormatada;
-      }
-    } catch (error) {
-      this.logger.warn('⚠️ Erro ao formatar data, usando data atual:', error);
-      const formatador = new Intl.DateTimeFormat("pt-BR");
-      return formatador.format(new Date());
-    }
-  }
-
-  private formatExpenseConfirmation(data: any): string {
-    // Formatação monetária profissional
-    const amount = new Intl.NumberFormat('pt-BR', {
-      style: 'currency',
-      currency: 'BRL'
-    }).format(data.amount);
-
-    const originalAmount = data.original_amount && data.original_amount > data.amount
-      ? new Intl.NumberFormat('pt-BR', {
-          style: 'currency',
-          currency: 'BRL'
-        }).format(data.original_amount)
-      : null;
-
-    const discountAmount = data.discount_amount && data.discount_amount > 0
-      ? new Intl.NumberFormat('pt-BR', {
-          style: 'currency',
-          currency: 'BRL'
-        }).format(data.discount_amount)
-      : data.original_amount && data.original_amount > data.amount
-        ? new Intl.NumberFormat('pt-BR', {
-            style: 'currency',
-            currency: 'BRL'
-          }).format(data.original_amount - data.amount)
-        : null;
-
-    let message = `✅ *DESPESA REGISTRADA COM SUCESSO!*\n\n`;
-    
-    // Usar método auxiliar para formatação de data
-    const dataFormatada = this.formatDatePreservingDay(data.date);
-    
-    // Informações básicas
-    message += `💰 *Valor:* ${amount}\n`;
-    
-    // Informações de desconto se houver
-    if (originalAmount && discountAmount) {
-      message += `💳 *Valor original:* ${originalAmount}\n`;
-      message += `🎯 *Desconto:* ${discountAmount}\n`;
-    }
-    
-    // Informações da loja
-    if (data.store_name) {
-      message += `🏪 *Loja:* ${data.store_name}\n`;
-    }
-    
-    // Categoria e data
-    message += `📂 *Categoria:* ${data.category}\n`;
-    message += `📅 *Data:* ${dataFormatada}\n`;
-    
-    // Forma de pagamento
-    if (data.payment_method) {
-      message += `💳 *Pagamento:* ${data.payment_method}\n`;
-    }
-    
-    // Descrição
-    message += `📝 *Descrição:* ${data.description}\n\n`;
-    
-    // Documento fiscal se disponível
-    if (data.document_type && data.document_number) {
-      message += `📄 ${data.document_type}: ${data.document_number}\n\n`;
-    }
-    
-    message += `*Parabéns! Sua despesa foi salva automaticamente!* Envie mais comprovantes quando quiser.`;
-    
-    return message;
-  }
-
-  private formatRevenueConfirmation(data: any): string {
-    const amount = new Intl.NumberFormat('pt-BR', {
-      style: 'currency',
-      currency: 'BRL'
-    }).format(data.amount);
-
-    const originalAmount = data.original_amount && data.original_amount !== data.amount
-      ? new Intl.NumberFormat('pt-BR', {
-          style: 'currency',
-          currency: 'BRL'
-        }).format(data.original_amount)
-      : null;
-
-    const discountAmount = data.discount_amount && data.discount_amount > 0
-      ? new Intl.NumberFormat('pt-BR', {
-          style: 'currency',
-          currency: 'BRL'
-        }).format(data.discount_amount)
-      : null;
-
-      // Usar método auxiliar para formatação de data
-      const dataFormatada = this.formatDatePreservingDay(data.date);
-
-    let message = `✅ *RECEITA REGISTRADA COM SUCESSO!*\n\n`;
-    message += `💰 *Valor:* ${amount}\n`;
-    
-    if (originalAmount && discountAmount) {
-      message += `📊 *Valor Original:* ${originalAmount}\n`;
-      message += `🎯 *Desconto:* ${discountAmount}\n`;
-    }
-    
-    message += `📅 *Data:* ${dataFormatada}\n`;
-    message += `📂 *Categoria:* ${data.category}\n`;
-    message += `📝 *Descrição:* ${data.description}\n`;
-    
-    if (data.payment_method) {
-      message += `💳 *Forma de Recebimento:* ${data.payment_method}\n`;
-    }
-    
-    if (data.payer_name) {
-      message += `🏢 *Pagador:* ${data.payer_name}\n`;
-    }
-    
-    if (data.revenue_type) {
-      const revenueTypeLabels = {
-        'salary': 'Salário',
-        'freelance': 'Freelance',
-        'sale': 'Venda',
-        'investment': 'Investimento',
-        'refund': 'Reembolso',
-        'transfer': 'Transferência',
-        'rent': 'Aluguel',
-        'commission': 'Comissão',
-        'other': 'Outro'
-      };
-      message += `🎯 *Tipo:* ${revenueTypeLabels[data.revenue_type] || data.revenue_type}\n`;
-    }
-    
-    if (data.source) {
-      message += `📌 *Origem:* ${data.source}\n`;
-    }
-
-    message += `\n🎉 *Parabéns! Sua receita foi registrada automaticamente.*\n`;
-
-    return message;
   }
 
   private async downloadImage(messageData: any): Promise<Buffer> {
@@ -1605,10 +1676,13 @@ https://play.google.com/store/apps/details?id=com.mepoupebot.app
       isWaitingForName: false,
       isWaitingForEmail: false,
       isWaitingForConfirmation: false,
+      isWaitingForBrazilianName: false,
       isInUpgradeFlow: false,
       isInRegistrationFlow: false,
       upgradeStep: 'introduction',
       registrationStep: 'introduction',
+      isInAnalysis: false,
+      analysisStartTime: undefined,
     };
   }
 
@@ -1617,10 +1691,13 @@ https://play.google.com/store/apps/details?id=com.mepoupebot.app
       isWaitingForName: false,
       isWaitingForEmail: false,
       isWaitingForConfirmation: false,
+      isWaitingForBrazilianName: false,
       isInUpgradeFlow: false,
       isInRegistrationFlow: false,
       registrationStep: 'introduction',
-      upgradeStep: 'introduction'
+      upgradeStep: 'introduction',
+      isInAnalysis: false,
+      analysisStartTime: undefined
     };
     
     this.conversationStates.set(phone, { ...currentState, ...state });
@@ -1628,6 +1705,52 @@ https://play.google.com/store/apps/details?id=com.mepoupebot.app
 
   private clearConversationState(phone: string): void {
     this.conversationStates.delete(phone);
+  }
+
+  /**
+   * Retorna usuários que estão em análise de documento
+   * Método público para ser usado pelo AnalysisTimeoutService
+   */
+  public getUsersInAnalysis(): Array<{
+    phone: string;
+    jurisdiction: string;
+    analysisStartTime: number;
+  }> {
+    const usersInAnalysis: Array<{
+      phone: string;
+      jurisdiction: string;
+      analysisStartTime: number;
+    }> = [];
+
+    for (const [phone, state] of this.conversationStates.entries()) {
+      if (state.isInAnalysis && state.analysisStartTime) {
+        // Detectar jurisdição baseada no número de telefone
+        const detectionResult = this.jurisdictionService.detectJurisdiction(phone);
+        
+        usersInAnalysis.push({
+          phone,
+          jurisdiction: detectionResult.jurisdiction,
+          analysisStartTime: state.analysisStartTime,
+        });
+      }
+    }
+
+    return usersInAnalysis;
+  }
+
+  /**
+   * Limpa o estado de análise para um usuário específico
+   * Método público para ser usado pelo AnalysisTimeoutService
+   */
+  public clearAnalysisState(phone: string): void {
+    const currentState = this.getConversationState(phone);
+    if (currentState.isInAnalysis) {
+      this.setConversationState(phone, {
+        isInAnalysis: false,
+        analysisStartTime: undefined,
+      });
+      this.logger.log(`🧹 Estado de análise limpo para ${phone}`);
+    }
   }
 
   private async handleUpgradeFlow(phone: string, userId: string, userMessage: string): Promise<void> {
@@ -1689,14 +1812,14 @@ ${planOptions}
         // Criar sessão inicial (apenas para usuários não brasileiros)
         const user = await this.usersService.getOrCreateUser(phone);
         if (user) {
-          await this.upgradeSessionsService.createSession({
-            user_id: userId,
-            phone: phone,
-            plan_name: '',
-            billing_cycle: 'monthly',
-            amount: 0,
-            current_step: 'plan_selection'
-          });
+        await this.upgradeSessionsService.createSession({
+          user_id: userId,
+          phone: phone,
+          plan_name: '',
+          billing_cycle: 'monthly',
+          amount: 0,
+          current_step: 'plan_selection'
+        });
         }
       }
     } catch (error) {
@@ -1858,14 +1981,14 @@ Agora escolha a frequência de pagamento:
       } else {
         const user = await this.usersService.getOrCreateUser(phone);
         if (user) {
-          session = await this.upgradeSessionsService.createSession({
-            user_id: userId,
-            phone: phone,
-            plan_name: selectedPlan.name,
-            billing_cycle: 'monthly', // Temporário, será atualizado
-            amount: 0, // Será calculado quando escolher frequência
-            current_step: 'plan_selection'
-          });
+        session = await this.upgradeSessionsService.createSession({
+          user_id: userId,
+          phone: phone,
+          plan_name: selectedPlan.name,
+          billing_cycle: 'monthly', // Temporário, será atualizado
+          amount: 0, // Será calculado quando escolher frequência
+          current_step: 'plan_selection'
+        });
         }
       }
       
@@ -2044,92 +2167,63 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
     }
   }
 
-  private async handleAudioMessage(message: any, user: User, phone: string): Promise<void> {
+
+  private async processAudioViaEvolutionAPI(message: any): Promise<Buffer | null> {
     try {
-      this.logger.log('🎵 Processando mensagem de áudio...');
-
-      this.logger.log('🎵 Mensagem de áudio:', JSON.stringify(message, null, 2));
+      this.logger.log('🎵 Processando áudio via Evolution API...');
       
-      // Enviar mensagem de processamento
-      await this.sendMessage(phone, '🎵 Processando seu áudio... Aguarde um momento.');
+      // Log da estrutura completa da mensagem para debug
+      this.logger.log('🔍 Estrutura da mensagem:', JSON.stringify(message, null, 2));
       
-      // Processar áudio base64
-      const audioBuffer = await this.processAudioBase64(message);
+      // Usar Evolution API para baixar o áudio
+      this.logger.log('🎵 Tentando download via Evolution API...');
+      const audioBuffer = await this.downloadFromEvolutionMediaAPI(message);
+      
       if (!audioBuffer) {
-        await this.sendMessage(phone, '❌ Não consegui processar o áudio. Tente novamente.');
-        return;
+        this.logger.error('❌ Falha ao baixar áudio via Evolution API');
+        return null;
       }
 
-      // Upload do áudio para Supabase Storage
-      const audioUrl = await this.uploadService.uploadAudioFile(audioBuffer, 'audio.mp3');
+      this.logger.log('✅ Áudio baixado com sucesso via Evolution API:', audioBuffer.length, 'bytes');
       
-      // Processar áudio para extrair dados financeiros
-      const extractedData = await this.aiService.processAudioForFinancialEntry(audioBuffer);
+      // Verificar os primeiros bytes para debug
+      const firstBytes = audioBuffer.slice(0, 16);
+      this.logger.log('🔍 Primeiros bytes do arquivo:', firstBytes.toString('hex'));
       
-      // Verificar limites baseado na classificação
-      if (extractedData.document_classification === 'revenue') {
-        // Verificar limite de receitas
-        const revenueLimits = await this.usageService.checkLimits(user.id, 'consultation');
-        if (!revenueLimits.allowed) {
-          await this.sendMessage(phone, revenueLimits.message);
-          return;
+      // Converter para MP3 para melhor compatibilidade
+      try {
+        const mp3Buffer = await this.uploadService.convertAudioToMp3(audioBuffer);
+        this.logger.log('✅ Áudio convertido para MP3:', mp3Buffer.length, 'bytes');
+        return mp3Buffer;
+      } catch (conversionError) {
+        this.logger.warn('⚠️ Falha na conversão para MP3, tentando conversão simples:', conversionError.message);
+        try {
+          const simpleBuffer = await this.uploadService.convertAudioSimple(audioBuffer);
+          this.logger.log('✅ Conversão simples concluída:', simpleBuffer.length, 'bytes');
+          return simpleBuffer;
+        } catch (simpleError) {
+          this.logger.warn('⚠️ Falha na conversão simples, usando buffer original:', simpleError.message);
+          return audioBuffer;
         }
-        await this.handleRevenueAudio(extractedData, user, phone, audioUrl);
-      } else {
-        // Verificar limite de despesas
-        const expenseLimits = await this.usageService.checkLimits(user.id, 'consultation');
-        if (!expenseLimits.allowed) {
-          await this.sendMessage(phone, expenseLimits.message);
-          return;
-        }
-        await this.handleExpenseAudio(extractedData, user, phone, audioUrl);
       }
-      
+
     } catch (error) {
-      this.logger.error('❌ Erro ao processar áudio:', error);
-      
-      // Verificar se é erro de validação específico
-      if (error.message.includes('Áudio não contém lançamento financeiro:')) {
-        await this.sendMessage(phone, `❌ ${error.message}\n\n🎵 **Envie um áudio válido:**\n• "Aluguel 2000"\n• "Supermercado 150"\n• "Salário 5000"\n• "Freelance 800"\n\nFale claramente o valor e a descrição do lançamento.`);
-        return;
-      }
-      
-      // Verificar se é erro de formato de áudio
-      if (error.message.includes('Invalid file format') || error.message.includes('formato')) {
-        await this.sendMessage(phone, `❌ **Problema com o formato do áudio**\n\n🎵 **Solução:**\n• Envie um áudio mais curto (máximo 30 segundos)\n• Fale mais claramente\n• Evite ruídos de fundo\n• Tente novamente em alguns segundos\n\n**Exemplo:** "Aluguel 2000"`);
-        return;
-      }
-      
-      // Verificar se é erro de transcrição
-      if (error.message.includes('transcrição') || error.message.includes('transcription')) {
-        await this.sendMessage(phone, `❌ **Erro na transcrição do áudio**\n\n🎵 **Dicas:**\n• Fale mais devagar e claramente\n• Evite ruídos de fundo\n• Use frases simples como "Aluguel 2000"\n• Tente novamente`);
-        return;
-      }
-      
-      await this.sendMessage(phone, '❌ Erro ao processar o áudio. Tente novamente ou fale mais claramente.');
+      this.logger.error('❌ Erro ao processar áudio via Evolution API:', error);
+      return null;
     }
   }
 
-  /**
-   * Processa áudio em base64 e converte para buffer
-   */
   private async processAudioBase64(message: any): Promise<Buffer | null> {
     try {
       this.logger.log('🎵 Processando áudio base64...');
       
       // Log da estrutura completa da mensagem para debug
       this.logger.log('🔍 Estrutura da mensagem:', JSON.stringify(message, null, 2));
-      
-      const audioMessage = message.message?.audioMessage;
-      if (!audioMessage) {
-        this.logger.error('❌ Mensagem de áudio não encontrada');
-        return null;
-      }
 
       // Verificar se temos base64 na mensagem (nível da mensagem, não dentro de audioMessage)
-      if (message.base64) {
+      if (message.message?.base64) {
         this.logger.log('✅ Base64 encontrado na mensagem');
-        const buffer = Buffer.from(message.base64, 'base64');
+        const buffer = Buffer.from(message.message?.base64, 'base64');
         
         if (buffer.length === 0) {
           this.logger.error('❌ Buffer vazio após conversão base64');
@@ -2207,98 +2301,6 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
     }
   }
 
-  private async handleRevenueAudio(extractedData: any, user: User, phone: string, audioUrl: string): Promise<void> {
-    try {
-      // Criar receita
-      const revenueData = {
-        user_id: user.id,
-        amount: extractedData.amount,
-        original_amount: extractedData.original_amount,
-        discount_amount: extractedData.discount_amount,
-        category: extractedData.category,
-        date: extractedData.date,
-        image_url: audioUrl, // Usar URL do áudio
-        description: extractedData.description,
-        payment_method: extractedData.payment_method,
-        payer_name: extractedData.payer_name,
-        payer_cnpj: extractedData.payer_cnpj,
-        payer_address: extractedData.payer_address,
-        document_type: extractedData.document_type,
-        document_number: extractedData.document_number,
-        revenue_type: extractedData.revenue_type,
-        source: extractedData.source,
-      };
-
-      // TODO: Implementar criação de receita para Chat LawX
-      // const revenue = await this.revenuesService.create(revenueData);
-      
-      // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'consultation');
-      
-      // Enviar confirmação
-      // TODO: Implementar confirmação de receita para Chat LawX
-      // const confirmationMessage = this.formatRevenueConfirmation(revenue);
-      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
-      await this.sendMessage(phone, confirmationMessage);
-      
-      this.logger.log(`✅ Receita criada via áudio para usuário ${user.id}`);
-      
-    } catch (error) {
-      this.logger.error('❌ Erro ao processar receita via áudio:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar a receita. Tente novamente.');
-    }
-  }
-
-  private async handleExpenseAudio(extractedData: any, user: User, phone: string, audioUrl: string): Promise<void> {
-    try {
-      this.logger.log('💰 Iniciando processamento de despesa via áudio...');
-      this.logger.log('💰 Dados extraídos:', JSON.stringify(extractedData, null, 2));
-      this.logger.log('💰 URL do áudio:', audioUrl);
-      this.logger.log('💰 ID do usuário:', user.id);
-
-      // Criar despesa
-      const expenseData = {
-        user_id: user.id,
-        amount: extractedData.amount,
-        original_amount: extractedData.original_amount,
-        discount_amount: extractedData.discount_amount,
-        category: extractedData.category,
-        date: extractedData.date,
-        image_url: audioUrl, // Usar URL do áudio
-        description: extractedData.description,
-        payment_method: extractedData.payment_method,
-        store_name: extractedData.store_name,
-        store_cnpj: extractedData.store_cnpj,
-        store_address: extractedData.store_address,
-        document_type: extractedData.document_type,
-        document_number: extractedData.document_number,
-      };
-
-      this.logger.log('💰 Dados da despesa a serem criados:', JSON.stringify(expenseData, null, 2));
-
-      // TODO: Implementar criação de despesa para Chat LawX
-      // const expense = await this.expensesService.create(expenseData);
-      this.logger.log('💰 Consulta jurídica criada com sucesso');
-      
-      // Incrementar contador de uso
-      await this.usageService.incrementUsage(user.id, 'consultation');
-      this.logger.log('💰 Contador de uso incrementado');
-      
-      // Enviar confirmação
-      // TODO: Implementar confirmação de despesa para Chat LawX
-      // const confirmationMessage = this.formatExpenseConfirmation(expense);
-      const confirmationMessage = '✅ Consulta jurídica registrada com sucesso!';
-      await this.sendMessage(phone, confirmationMessage);
-      
-      this.logger.log(`✅ Despesa criada via áudio para usuário ${user.id}`);
-      
-    } catch (error) {
-      this.logger.error('❌ Erro ao processar despesa via áudio:', error);
-      this.logger.error('❌ Stack trace:', error.stack);
-      await this.sendMessage(phone, '❌ Erro ao processar a despesa. Tente novamente.');
-    }
-  }
-
   private async downloadAudio(messageData: any): Promise<Buffer> {
     try {
       this.logger.log('🎵 Iniciando download de áudio...');
@@ -2342,14 +2344,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       const evolutionApiKey = this.configService.get('EVOLUTION_API_KEY');
       const instanceName = this.configService.get('EVOLUTION_INSTANCE_NAME');
 
-      // Extrair o ID da mensagem da URL
-      const urlMatch = audioMessage.url.match(/\/([^\/]+)\.enc/);
-      if (!urlMatch) {
-        this.logger.warn('⚠️ Não foi possível extrair ID da mensagem da URL');
-        return null;
-      }
-
-      const messageId = urlMatch[1];
+      const messageId = audioMessage.message.key.id;
       this.logger.log('🎵 ID da mensagem extraído:', messageId);
 
       // Método 1: Tentar usar a API de download de mídia do Evolution API
@@ -2361,8 +2356,12 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
             'apikey': evolutionApiKey,
           },
           body: JSON.stringify({
-            messageId: messageId,
-            remoteJid: audioMessage.remoteJid || '554892060485@s.whatsapp.net'
+            message: {
+              key: {
+                id: messageId
+              }
+            },
+            convertToMp4: true
           }),
         });
 
@@ -2458,7 +2457,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       };
 
       // Usar IA para analisar a intenção no contexto
-      const aiAnalysis = await this.aiService.analyzeUpgradeIntent(userMessage, context);
+      const aiAnalysis = await this.aiService.analyzePlanUpgradeIntent(userMessage, context);
       
       this.logger.log('🤖 Análise da IA:', aiAnalysis);
 
@@ -2558,7 +2557,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       this.logger.log('📅 Processando seleção de frequência com IA...');
       
       // Usar IA para detectar frequência
-      const frequencyAnalysis = await this.aiService.detectFrequencySelection(userMessage);
+      const frequencyAnalysis = await this.aiService.detectPlanFrequencySelection(userMessage);
       
       if (frequencyAnalysis.frequency) {
         await this.processFrequencySelection(phone, userId, userMessage);
@@ -2615,7 +2614,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       this.logger.log('🔄 Continuando fluxo de upgrade...');
       
       // Gerar resposta contextual baseada no estado atual
-      const response = await this.aiService.generateUpgradeResponse(userMessage, context);
+      const response = await this.aiService.generatePlanUpgradeResponse(userMessage, context);
       await this.sendMessage(phone, response);
       
     } catch (error) {
@@ -2672,6 +2671,390 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
     } catch (error) {
       this.logger.error('❌ Erro ao gerar PIX:', error);
       await this.sendMessage(phone, '❌ Erro ao processar pagamento. Tente novamente.');
+    }
+  }
+
+  // ===== FUNÇÕES AUXILIARES PARA PROCESSAMENTO DE DOCUMENTOS =====
+
+  private extractBase64FromDocumentMessage(messageData: any): string | null {
+    try {
+      this.logger.log('📄 Extraindo base64 da mensagem de documento...');
+      
+      const documentMessage = messageData.message?.documentMessage;
+      if (!documentMessage) {
+        this.logger.warn('⚠️ Mensagem de documento não encontrada');
+        return null;
+      }
+
+      this.logger.log('📄 Dados do documento:', JSON.stringify(documentMessage, null, 2));
+
+      // Verificar se há base64 na mensagem
+      if (messageData.message?.base64) {
+        this.logger.log('✅ Base64 encontrado na mensagem');
+        return messageData.message.base64;
+      }
+
+      // Verificar se há base64 no documentMessage
+      if (documentMessage.base64) {
+        this.logger.log('✅ Base64 encontrado no documentMessage');
+        return documentMessage.base64;
+      }
+
+      this.logger.warn('⚠️ Base64 não encontrado na mensagem de documento');
+      return null;
+    } catch (error) {
+      this.logger.error('❌ Erro ao extrair base64:', error);
+      return null;
+    }
+  }
+
+  private detectDocumentType(buffer: Buffer): string {
+    const header = buffer.slice(0, 8);
+    const headerHex = header.toString('hex').toLowerCase();
+    
+    this.logger.log('📄 Header do documento:', headerHex);
+    
+    // PDF: %PDF
+    if (headerHex.startsWith('25504446')) {
+      this.logger.log('📄 Tipo detectado: PDF');
+      return 'application/pdf';
+    }
+    
+    // DOCX: PK (ZIP-based)
+    if (headerHex.startsWith('504b0304') || headerHex.startsWith('504b0506')) {
+      this.logger.log('📄 Tipo detectado: DOCX');
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    }
+    
+    // DOC: D0CF11E0 (OLE2)
+    if (headerHex.startsWith('d0cf11e0')) {
+      this.logger.log('📄 Tipo detectado: DOC');
+      return 'application/msword';
+    }
+    
+    this.logger.warn('⚠️ Tipo de documento não reconhecido:', headerHex);
+    return 'unknown';
+  }
+
+  private isSupportedDocumentType(mimeType: string): boolean {
+    const supportedTypes = [
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+    
+    return supportedTypes.includes(mimeType);
+  }
+
+  private generateDocumentFileName(mimeType: string): string {
+    const timestamp = Date.now();
+    const extension = this.getFileExtensionFromMimeType(mimeType);
+    return `document-${timestamp}.${extension}`;
+  }
+
+  private getFileExtensionFromMimeType(mimeType: string): string {
+    const extensions: { [key: string]: string } = {
+      'application/pdf': 'pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+      'application/msword': 'doc'
+    };
+    return extensions[mimeType] || 'bin';
+  }
+
+  private async convertBase64ToFile(base64Data: string, mimeType: string): Promise<Buffer> {
+    try {
+      // Remover prefixo data: se existir
+      const base64 = base64Data.replace(/^data:[^;]+;base64,/, '');
+      const buffer = Buffer.from(base64, 'base64');
+      
+      this.logger.log(`📄 Arquivo convertido: ${buffer.length} bytes, tipo: ${mimeType}`);
+      return buffer;
+    } catch (error) {
+      this.logger.error('❌ Erro ao converter base64:', error);
+      throw new Error('Falha na conversão do documento');
+    }
+  }
+
+  private async analyzeDocumentWithExternalAPI(fileUrl: string): Promise<string> {
+    try {
+      this.logger.log('🔍 Enviando documento para análise externa...');
+      
+      const response = await axios.post(
+        'https://us-central1-gleaming-nomad-443014-u2.cloudfunctions.net/vertex-LawX-personalizada',
+        {
+          prompt_text: `Analise este documento jurídico e forneça um resumo completo e detalhado. 
+
+IMPORTANTE: Retorne a resposta EXATAMENTE no formato JSON abaixo, sem texto adicional:
+
+{
+  "documentType": "tipo do documento (contrato, petição, parecer, sentença, etc.)",
+  "parties": ["lista das partes envolvidas"],
+  "mainObjective": "objetivo principal do documento",
+  "importantPoints": ["lista dos pontos mais relevantes"],
+  "relevantClauses": ["cláusulas ou artigos mais importantes"],
+  "deadlinesAndValues": "prazos, valores e datas importantes",
+  "identifiedRisks": ["riscos ou problemas identificados"],
+  "recommendations": ["sugestões práticas"],
+  "executiveSummary": "resumo conciso dos pontos principais"
+}
+
+Seja específico, prático e forneça uma análise jurídica completa e útil.`,
+          file_url: fileUrl
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        }
+      );
+
+      this.logger.log('✅ Análise externa concluída');
+
+      // Verificar se a resposta é um JSON válido
+      let analysisData;
+      try {
+        analysisData = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+      } catch (parseError) {
+        this.logger.error('❌ Erro ao fazer parse do JSON:', parseError);
+        throw new Error('Resposta inválida do serviço de análise');
+      }
+
+      // Converter JSON para formato de texto legível
+      return this.formatDocumentAnalysisForUser(analysisData);
+    } catch (error) {
+      this.logger.error('❌ Erro na análise externa:', error);
+      
+      if (error.response) {
+        this.logger.error('❌ Status da resposta:', error.response.status);
+        this.logger.error('❌ Dados da resposta:', error.response.data);
+      }
+      
+      throw new Error('Falha na análise do documento. Tente novamente.');
+    }
+  }
+
+  private checkAnalysisTimeout(conversationState: ConversationState): boolean {
+    if (!conversationState.analysisStartTime) {
+      return false;
+    }
+    
+    const currentTime = Date.now();
+    const timeElapsed = currentTime - conversationState.analysisStartTime;
+    const timeoutMs = 10 * 60 * 1000; // 10 minutos em milissegundos
+    
+    return timeElapsed > timeoutMs;
+  }
+
+  /**
+   * Processa confirmação de análise de documento
+   */
+  private async handleAnalysisConfirmation(message: any, phone: string, user: User | null, jurisdiction: string): Promise<void> {
+    try {
+      const text = message.message?.conversation || '';
+      
+      // Usar IA para detectar confirmação/negação
+      const detection = await this.aiService.detectConfirmationOrDenial(text, jurisdiction);
+      
+      if (detection.isConfirmation && detection.confidence > 0.7) {
+        // Usuário quer analisar outro documento
+        await this.sendMessage(phone, this.getAnalysisConfirmationMessage(jurisdiction));
+        // Manter isInAnalysis = true (já está definido)
+        
+      } else if (detection.isDenial && detection.confidence > 0.7) {
+        // Usuário não quer analisar outro documento
+        const conversationState = this.getConversationState(phone);
+        this.setConversationState(phone, {
+          ...conversationState,
+          isInAnalysis: false,
+          analysisStartTime: undefined
+        });
+        
+        // Mostrar menu legal
+        await this.showLegalMenu(phone);
+        
+      } else {
+        // Resposta não reconhecida ou confiança baixa
+        await this.sendMessage(phone, this.getUnrecognizedResponseMessage(jurisdiction));
+      }
+      
+    } catch (error) {
+      this.logger.error('❌ Erro ao processar confirmação de análise:', error);
+      await this.sendMessage(phone, '❌ Erro ao processar sua resposta. Tente novamente.');
+    }
+  }
+
+  /**
+   * Avisa sobre aceitação apenas de PDF/DOCX durante análise
+   */
+  private async handleTextDuringAnalysis(phone: string, jurisdiction: string): Promise<void> {
+    await this.sendMessage(phone, this.getTextDuringAnalysisMessage(jurisdiction));
+  }
+
+  /**
+   * Verifica se a mensagem é uma confirmação (sim/não) usando IA
+   */
+  private async isConfirmationMessage(message: any, jurisdiction: string): Promise<boolean> {
+    try {
+      const text = message.message?.conversation || '';
+      
+      // Usar IA para detectar confirmação/negação
+      const detection = await this.aiService.detectConfirmationOrDenial(text, jurisdiction);
+      
+      // Retorna true se for confirmação ou negação com confiança alta
+      return (detection.isConfirmation || detection.isDenial) && detection.confidence > 0.7;
+    } catch (error) {
+      this.logger.error('❌ Erro ao verificar confirmação com IA:', error);
+      
+      // Fallback para verificação simples
+      const text = message.message?.conversation?.toLowerCase() || '';
+      return text.includes('sim') || text.includes('yes') || text.includes('s') ||
+             text.includes('não') || text.includes('nao') || text.includes('no') || text.includes('n') ||
+             text.includes('sí') || text.includes('si');
+    }
+  }
+
+  /**
+   * Mensagens de timeout de análise por jurisdição
+   */
+  private getAnalysisTimeoutMessage(jurisdiction: string): string {
+    switch (jurisdiction) {
+      case 'BR':
+        return '⏰ Acho que não deseja enviar documento. Estou saindo do modo de espera.';
+      case 'PT':
+        return '⏰ Parece que não deseja enviar documento. Estou a sair do modo de espera.';
+      case 'ES':
+        return '⏰ Parece que no desea enviar documento. Estoy saliendo del modo de espera.';
+      default:
+        return '⏰ Timeout reached. Exiting analysis mode.';
+    }
+  }
+
+  /**
+   * Mensagens de confirmação de análise por jurisdição
+   */
+  private getAnalysisConfirmationMessage(jurisdiction: string): string {
+    switch (jurisdiction) {
+      case 'BR':
+        return '✅ Ok, pode enviar outro documento para ser analisado.';
+      case 'PT':
+        return '✅ Ok, pode enviar outro documento para ser analisado.';
+      case 'ES':
+        return '✅ Ok, puede enviar otro documento para ser analizado.';
+      default:
+        return '✅ Ok, you can send another document to be analyzed.';
+    }
+  }
+
+  /**
+   * Mensagens de aviso sobre PDF/DOCX por jurisdição
+   */
+  private getTextDuringAnalysisMessage(jurisdiction: string): string {
+    switch (jurisdiction) {
+      case 'BR':
+        return '⚠️ Durante a análise de documentos, só aceito arquivos PDF ou DOCX. Envie um documento válido ou responda "sim" ou "não" para continuar.';
+      case 'PT':
+        return '⚠️ Durante a análise de documentos, só aceito ficheiros PDF ou DOCX. Envie um documento válido ou responda "sim" ou "não" para continuar.';
+      case 'ES':
+        return '⚠️ Durante el análisis de documentos, solo acepto archivos PDF o DOCX. Envíe un documento válido o responda "sí" o "no" para continuar.';
+      default:
+        return '⚠️ During document analysis, I only accept PDF or DOCX files. Send a valid document or answer "yes" or "no" to continue.';
+    }
+  }
+
+  /**
+   * Mensagens de resposta não reconhecida por jurisdição
+   */
+  private getUnrecognizedResponseMessage(jurisdiction: string): string {
+    switch (jurisdiction) {
+      case 'BR':
+        return '❓ Por favor, responda "sim" ou "não" se deseja analisar outro documento.';
+      case 'PT':
+        return '❓ Por favor, responda "sim" ou "não" se deseja analisar outro documento.';
+      case 'ES':
+        return '❓ Por favor, responda "sí" o "no" si desea analizar otro documento.';
+      default:
+        return '❓ Please answer "yes" or "no" if you want to analyze another document.';
+    }
+  }
+
+  /**
+   * Formata análise do documento em texto legível para o usuário
+   */
+  private formatDocumentAnalysisForUser(analysisData: any): string {
+    try {
+      let formattedText = '📄 **ANÁLISE JURÍDICA DO DOCUMENTO**\n\n';
+
+      // Tipo de Documento
+      if (analysisData.documentType) {
+        formattedText += `📋 **Tipo de Documento:** ${analysisData.documentType}\n\n`;
+      }
+
+      // Partes Envolvidas
+      if (analysisData.parties && Array.isArray(analysisData.parties) && analysisData.parties.length > 0) {
+        formattedText += `👥 **Partes Envolvidas:**\n`;
+        analysisData.parties.forEach((party: string, index: number) => {
+          formattedText += `• ${party}\n`;
+        });
+        formattedText += '\n';
+      }
+
+      // Objetivo Principal
+      if (analysisData.mainObjective) {
+        formattedText += `🎯 **Objetivo Principal:**\n${analysisData.mainObjective}\n\n`;
+      }
+
+      // Pontos Importantes
+      if (analysisData.importantPoints && Array.isArray(analysisData.importantPoints) && analysisData.importantPoints.length > 0) {
+        formattedText += `⭐ **Pontos Importantes:**\n`;
+        analysisData.importantPoints.forEach((point: string, index: number) => {
+          formattedText += `• ${point}\n`;
+        });
+        formattedText += '\n';
+      }
+
+      // Cláusulas Relevantes
+      if (analysisData.relevantClauses && Array.isArray(analysisData.relevantClauses) && analysisData.relevantClauses.length > 0) {
+        formattedText += `📜 **Cláusulas/Artigos Relevantes:**\n`;
+        analysisData.relevantClauses.forEach((clause: string, index: number) => {
+          formattedText += `• ${clause}\n`;
+        });
+        formattedText += '\n';
+      }
+
+      // Prazos e Valores
+      if (analysisData.deadlinesAndValues) {
+        formattedText += `⏰ **Prazos e Valores:**\n${analysisData.deadlinesAndValues}\n\n`;
+      }
+
+      // Riscos Identificados
+      if (analysisData.identifiedRisks && Array.isArray(analysisData.identifiedRisks) && analysisData.identifiedRisks.length > 0) {
+        formattedText += `⚠️ **Riscos Identificados:**\n`;
+        analysisData.identifiedRisks.forEach((risk: string, index: number) => {
+          formattedText += `• ${risk}\n`;
+        });
+        formattedText += '\n';
+      }
+
+      // Recomendações
+      if (analysisData.recommendations && Array.isArray(analysisData.recommendations) && analysisData.recommendations.length > 0) {
+        formattedText += `💡 **Recomendações:**\n`;
+        analysisData.recommendations.forEach((recommendation: string, index: number) => {
+          formattedText += `• ${recommendation}\n`;
+        });
+        formattedText += '\n';
+      }
+
+      // Resumo Executivo
+      if (analysisData.executiveSummary) {
+        formattedText += `📝 **Resumo Executivo:**\n${analysisData.executiveSummary}\n\n`;
+      }
+
+      formattedText += '---\n';
+      formattedText += '✅ *Análise concluída com sucesso!*';
+
+      return formattedText;
+    } catch (error) {
+      this.logger.error('❌ Erro ao formatar análise:', error);
+      return '❌ Erro ao processar a análise do documento.';
     }
   }
 } 

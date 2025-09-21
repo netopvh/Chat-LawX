@@ -15,6 +15,7 @@ export interface DDIDetectionResult {
   jurisdiction: string;
   isValid: boolean;
   config: JurisdictionConfig;
+  isForced?: boolean; // Flag para indicar se a jurisdição foi forçada para teste
 }
 
 export interface LimitValidationResult {

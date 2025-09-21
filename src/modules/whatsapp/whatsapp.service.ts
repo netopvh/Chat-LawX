@@ -20,6 +20,7 @@ interface ConversationState {
   isWaitingForEmail: boolean;
   isWaitingForConfirmation: boolean;
   isWaitingForBrazilianName: boolean;
+  isWaitingForWhatsAppName: boolean; // NOVO: Para controle de nome em ES/PT
   isInUpgradeFlow: boolean;
   isInRegistrationFlow: boolean;
   registrationStep: 'introduction' | 'name' | 'email' | 'confirmation' | 'completed';
@@ -35,20 +36,17 @@ interface ConversationState {
   pendingEmail?: string;
 }
 
-interface LegalDocument {
-  id: string;
-  user_id: string;
-  type: string;
-  content: string;
-  analysis?: string;
-  jurisdiction: string;
-  created_at: string;
-}
-
 @Injectable()
 export class WhatsAppService {
   private readonly logger = new Logger(WhatsAppService.name);
   private conversationStates = new Map<string, ConversationState>();
+
+  // Array de números brasileiros para teste no fluxo ES
+  private readonly testNumbersForESFlow = [
+    '554892060485', // Número de teste 1
+    '558499869794', // Número de teste 2
+    '553288125754', // Número de teste 3
+  ];
 
   constructor(
     private configService: ConfigService,
@@ -188,95 +186,14 @@ export class WhatsAppService {
       // Se é usuário brasileiro, enviar link para cadastro no site
       if (isBrazilianUser) {
         const response = `🇧🇷 Olá! Seja bem-vindo ao Chat LawX!\n\nPara usuários brasileiros, você precisa se cadastrar em nossa plataforma web.\n\n🔗 Acesse: https://plataforma.lawx.ai/auth/signup\n\nApós o cadastro, você poderá usar nosso assistente jurídico via WhatsApp.\n\nSe já possui cadastro, verifique se seu número está vinculado à sua conta.`;
-        await this.sendMessage(phone, response);
+        await this.sendMessageWithTyping(phone, response, 2000);
         return;
       }
       
-      // Para PT/ES, fluxo de cadastro via WhatsApp
-      if (!state.isInRegistrationFlow) {
-        // Iniciar fluxo de cadastro
-        const response = `🌍 Olá! Seja bem-vindo ao Chat LawX!\n\nSou seu assistente jurídico e estou aqui para ajudá-lo com consultas legais.\n\nPara começar, preciso de algumas informações:\n\n📝 Qual é o seu nome completo?`;
-        await this.sendMessage(phone, response);
-        this.setConversationState(phone, {
-          isInRegistrationFlow: true,
-          registrationStep: 'name',
-          isWaitingForName: true,
-          isWaitingForEmail: false,
-          isWaitingForConfirmation: false,
-          isInUpgradeFlow: false,
-          upgradeStep: 'introduction',
-          jurisdiction: jurisdiction.jurisdiction,
-          ddi: jurisdiction.ddi
-        });
-        return;
-      }
-
-      // Processar etapas do cadastro
-      if (state.registrationStep === 'name' && state.isWaitingForName) {
-        // Validar nome
-        if (text.length < 2) {
-          await this.sendMessage(phone, '❌ Por favor, informe um nome válido com pelo menos 2 caracteres.');
-        return;
-      }
-
-        // Solicitar email
-        const response = `✅ Obrigado, ${text}!\n\n📧 Agora preciso do seu e-mail para completar o cadastro:`;
-        await this.sendMessage(phone, response);
-        this.setConversationState(phone, {
-          ...state,
-          registrationStep: 'email',
-          isWaitingForName: false,
-          isWaitingForEmail: true,
-          pendingName: text
-        });
-        return;
-      }
-
-      if (state.registrationStep === 'email' && state.isWaitingForEmail) {
-        // Validar email
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(text)) {
-          await this.sendMessage(phone, '❌ Por favor, informe um e-mail válido.');
-          return;
-        }
-
-        // Confirmar dados
-        const response = `✅ Perfeito!\n\n📋 Confirme seus dados:\n\n👤 Nome: ${state.pendingName}\n📧 E-mail: ${text}\n📱 Telefone: ${phone}\n🌍 País: ${jurisdiction.country}\n\nDigite "CONFIRMAR" para finalizar o cadastro ou "CANCELAR" para recomeçar.`;
-        await this.sendMessage(phone, response);
-        this.setConversationState(phone, {
-          ...state,
-          registrationStep: 'confirmation',
-          isWaitingForEmail: false,
-          isWaitingForConfirmation: true,
-          pendingEmail: text
-        });
-        return;
-      }
-
-      if (state.registrationStep === 'confirmation' && state.isWaitingForConfirmation) {
-        if (text.toUpperCase() === 'CONFIRMAR') {
-          // Finalizar cadastro
-          await this.finalizeUserRegistration(phone, state, jurisdiction);
-        } else if (text.toUpperCase() === 'CANCELAR') {
-          // Recomeçar cadastro
-          const response = '🔄 Cadastro cancelado. Vamos recomeçar!\n\n📝 Qual é o seu nome completo?';
-          await this.sendMessage(phone, response);
-          this.setConversationState(phone, { 
-            isInRegistrationFlow: true,
-            registrationStep: 'name',
-            isWaitingForName: true, 
-            isWaitingForEmail: false,
-            isWaitingForConfirmation: false,
-            isInUpgradeFlow: false,
-            upgradeStep: 'introduction',
-            jurisdiction: jurisdiction.jurisdiction,
-            ddi: jurisdiction.ddi
-          });
-        } else {
-          await this.sendMessage(phone, '❌ Por favor, digite "CONFIRMAR" para finalizar ou "CANCELAR" para recomeçar.');
-        }
-        return;
-      }
+      // Para PT/ES, usar fluxo de boas-vindas WhatsApp (com IA localizada)
+      // Em vez de fluxo de cadastro estático, usar handleWhatsAppUserWelcome
+      await this.handleWhatsAppUserWelcome(phone, text, state, jurisdiction);
+      return;
 
     } catch (error) {
       this.logger.error('Erro no fluxo de cadastro:', error);
@@ -305,7 +222,7 @@ export class WhatsAppService {
       // Mensagem de boas-vindas
       const response = `🎉 Parabéns, ${state.pendingName}!\n\n✅ Seu cadastro foi realizado com sucesso!\n\n🎁 Você recebeu automaticamente o plano *Fremium* com:\n• 2 consultas jurídicas gratuitas\n• Análise de documentos básica\n\n💬 Agora você pode:\n• Fazer perguntas sobre direito\n• Enviar documentos para análise\n• Solicitar orientações jurídicas\n\nDigite "MENU" para ver todas as opções disponíveis.`;
       
-      await this.sendMessage(phone, response);
+      await this.sendMessageWithTyping(phone, response, 2500);
       
       // Limpar estado da conversa
       this.clearConversationState(phone);
@@ -383,7 +300,7 @@ export class WhatsAppService {
   private async handleWelcomeBackMessage(phone: string, session: any): Promise<void> {
     try {
       const message = `Bem vindo novamente ${session.name}, em que posso te ajudar?`;
-      await this.sendMessage(phone, message);
+      await this.sendMessageWithTyping(phone, message, 1500);
       
       // Atualizar last_message_sent
       await this.updateLastMessageSent(phone);
@@ -414,6 +331,322 @@ export class WhatsAppService {
       this.logger.log(`✅ Campo last_message_sent atualizado para ${phoneWithoutDDI}`);
     } catch (error) {
       this.logger.error(`❌ Erro ao atualizar last_message_sent para ${phone}:`, error);
+    }
+  }
+
+  // ===== MÉTODOS PARA CONTROLE DE SESSÃO WHATSAPP (ES/PT) =====
+
+  /**
+   * Verifica se usuário tem sessão ativa no WhatsApp (ES/PT)
+   * Equivalente ao checkBrazilianUserSession mas usando Prisma
+   */
+  private async checkWhatsAppSession(phone: string, jurisdiction: string): Promise<{
+    session: any | null;
+    needsWelcomeBack: boolean;
+    timeSinceLastMessage: number;
+  }> {
+    try {
+      // Remove caracteres não numéricos
+      const cleanPhone = phone.replace(/\D/g, '');
+      
+      this.logger.log(`🔍 Verificando sessão WhatsApp para: ${cleanPhone} (${jurisdiction})`);
+      
+      // Buscar na tabela whatsapp_sessions
+      const session = await this.prismaService.findWhatsAppSessionByPhone(cleanPhone);
+
+      if (!session) {
+        this.logger.log(`❌ Nenhuma sessão encontrada para ${cleanPhone}`);
+        return {
+          session: null,
+          needsWelcomeBack: false,
+          timeSinceLastMessage: 0
+        };
+      }
+
+      // Calcular tempo desde última mensagem
+      const timeSinceLastMessage = Date.now() - session.lastMessageSent.getTime();
+      const oneHourInMs = 60 * 60 * 1000; // 1 hora em milissegundos
+      const needsWelcomeBack = timeSinceLastMessage > oneHourInMs;
+
+      this.logger.log(`✅ Sessão encontrada: ${session.name}, última mensagem: ${timeSinceLastMessage}ms atrás`);
+
+      return {
+        session,
+        needsWelcomeBack,
+        timeSinceLastMessage
+      };
+    } catch (error) {
+      this.logger.error(`❌ Erro ao verificar sessão WhatsApp para ${phone}:`, error);
+      return {
+        session: null,
+        needsWelcomeBack: false,
+        timeSinceLastMessage: 0
+      };
+    }
+  }
+
+  /**
+   * Cria nova sessão WhatsApp (ES/PT)
+   * Equivalente ao createBrazilianUserSession mas usando Prisma
+   */
+  private async createWhatsAppSession(phone: string, name: string, jurisdiction: string): Promise<any> {
+    try {
+      // Remove caracteres não numéricos
+      const cleanPhone = phone.replace(/\D/g, '');
+      
+      this.logger.log(`📝 Criando sessão WhatsApp: ${name} - ${cleanPhone} (${jurisdiction})`);
+      
+      // Determinar DDI baseado na jurisdição
+      const ddi = jurisdiction === 'ES' ? '34' : '351';
+      
+      // ✅ PRIMEIRO: Verificar se o usuário existe na tabela users
+      const existingUser = await this.prismaService.findUserByPhone(cleanPhone);
+      
+      let user;
+      if (!existingUser) {
+        this.logger.log(`👤 Usuário não encontrado, criando novo usuário: ${cleanPhone}`);
+        
+        // Criar usuário na tabela users primeiro
+        user = await this.prismaService.user.create({
+          data: {
+            phone: cleanPhone,
+            ddi: ddi,
+            jurisdiction: jurisdiction,
+            name: name,
+            isRegistered: true,
+          }
+        });
+        
+        this.logger.log(`✅ Usuário criado com sucesso: ${user.id}`);
+        
+        // 🎁 CRIAR ASSINATURA FREMIUM AUTOMATICAMENTE
+        try {
+          await this.prismaService.createFremiumSubscription(user.id, jurisdiction);
+          this.logger.log(`🎁 Assinatura Fremium criada automaticamente para usuário: ${user.id}`);
+        } catch (subscriptionError) {
+          this.logger.error(`❌ Erro ao criar assinatura Fremium:`, subscriptionError);
+          // Não falhar o processo por causa da assinatura, apenas logar o erro
+        }
+      } else {
+        this.logger.log(`✅ Usuário encontrado: ${existingUser.id}`);
+        
+        // ✅ NOVO: Atualizar nome do usuário existente se necessário
+        if (existingUser.name !== name) {
+          await this.prismaService.user.update({
+            where: { id: existingUser.id },
+            data: { name: name }
+          });
+          this.logger.log(`✅ Nome do usuário atualizado: ${name}`);
+        }
+        
+        // ✅ NOVO: Verificar se usuário tem assinatura ativa, se não tiver, criar Fremium
+        try {
+          const activeSubscription = await this.prismaService.findUserSubscription(existingUser.id);
+          
+          if (!activeSubscription) {
+            this.logger.log(`🎁 Usuário existente sem assinatura ativa, criando Fremium: ${existingUser.id}`);
+            await this.prismaService.createFremiumSubscription(existingUser.id, jurisdiction);
+            this.logger.log(`🎁 Assinatura Fremium criada para usuário existente: ${existingUser.id}`);
+          } else {
+            this.logger.log(`✅ Usuário já possui assinatura ativa: ${activeSubscription.id}`);
+          }
+        } catch (subscriptionError) {
+          this.logger.error(`❌ Erro ao verificar/criar assinatura para usuário existente:`, subscriptionError);
+          // Não falhar o processo por causa da assinatura, apenas logar o erro
+        }
+        
+        user = existingUser;
+      }
+      
+      // Inserir na tabela whatsapp_sessions
+      const session = await this.prismaService.createWhatsAppSession({
+        phone: cleanPhone,
+        name: name,
+        jurisdiction: jurisdiction,
+        ddi: ddi
+      });
+
+      // Atualizar usuário com referência à sessão
+      await this.prismaService.updateUserLastWhatsAppInteraction(cleanPhone);
+
+      this.logger.log(`✅ Sessão WhatsApp criada com sucesso: ${session.id}`);
+      return session;
+    } catch (error) {
+      this.logger.error(`❌ Erro ao criar sessão WhatsApp para ${phone}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Atualiza timestamp da última mensagem (ES/PT)
+   * Equivalente ao updateLastMessageSent mas usando Prisma
+   */
+  private async updateWhatsAppLastMessageSent(phone: string, jurisdiction: string): Promise<void> {
+    try {
+      // Remove caracteres não numéricos
+      const cleanPhone = phone.replace(/\D/g, '');
+      
+      // Atualizar campo lastMessageSent na tabela whatsapp_sessions
+      await this.prismaService.updateWhatsAppSession(cleanPhone, {
+        lastMessageSent: new Date(),
+        isActive: true
+      });
+
+      // Atualizar também no User
+      await this.prismaService.updateUserLastWhatsAppInteraction(cleanPhone);
+
+      this.logger.log(`✅ Campo lastMessageSent atualizado para ${cleanPhone}`);
+    } catch (error) {
+      this.logger.error(`❌ Erro ao atualizar lastMessageSent para ${phone}:`, error);
+    }
+  }
+
+  /**
+   * Manipula boas-vindas para usuários WhatsApp (ES/PT)
+   * Equivalente ao handleBrazilianUserWelcome mas adaptado para ES/PT
+   */
+  private async handleWhatsAppUserWelcome(
+    phone: string, 
+    text: string, 
+    state: ConversationState,
+    jurisdiction: any
+  ): Promise<void> {
+    try {
+      // Se já está no fluxo de coleta de nome
+      if (state.isWaitingForWhatsAppName) {
+        // Usuário já enviou o nome
+        if (text.length < 2) {
+          const response = jurisdiction.jurisdiction === 'ES' 
+            ? '❌ Por favor, proporciona un nombre válido con al menos 2 caracteres.'
+            : '❌ Por favor, forneça um nome válido com pelo menos 2 caracteres.';
+
+          await this.sendMessageWithTyping(phone, response, 1000);
+          return;
+        }
+
+        // Criar sessão na tabela whatsapp_sessions
+        await this.createWhatsAppSession(phone, text, jurisdiction.jurisdiction);
+        
+        // Gerar mensagem de boas-vindas personalizada com IA
+        const welcomePrompt = `Gere uma mensagem de boas-vindas personalizada para o Chat LawX, um assistente jurídico especializado.
+
+Nome do usuário: ${text}
+Jurisdição: ${jurisdiction.jurisdiction === 'ES' ? 'Espanha' : 'Portugal'}
+Idioma: ${jurisdiction.jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'}
+
+Use obrigatoriamente no idioma ${jurisdiction.jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'} para responder.
+
+Requisitos:
+- Deve mencionar obrigatoriamente "Chat LawX"
+- Deve especificar que é um assistente jurídico
+- Tom profissional e menos informal (usuário já autenticado)
+- Deve personalizar com o nome do usuário: ${text}
+- Máximo 5 linhas
+- Use emojis apropriados
+- Funcionalidades: Fazer perguntas sobre direito em texto ou audio, Enviar documentos em PDF/DOCX ou imagem para análise.
+
+Exemplo de estrutura:
+[Emoji] [Saudação personalizada] ${text}, [Chat LawX]!
+Sou teu assistente jurídico especializado
+[Emoji] [Funcionalidades disponíveis]
+Fazer uma pergunta formal desejando o que deseja fazer hoje.`;
+
+        const welcomeMsg = await this.aiService.executeCustomPrompt(
+          welcomePrompt,
+          'gpt-3.5-turbo',
+          'Você é um especialista em criar mensagens de boas-vindas personalizadas para assistentes jurídicos. Seja profissional e útil.',
+          0.7,
+          300
+        );
+        
+        // Enviar mensagem de boas-vindas personalizada
+        await this.sendMessageWithTyping(phone, welcomeMsg, 2000);
+        
+        // Limpar estado da conversa
+        this.clearConversationState(phone);
+        
+        this.logger.log(`✅ Usuário ${jurisdiction.jurisdiction} ${phone} iniciou sessão com nome: ${text}`);
+        return;
+      }
+
+      // Primeira mensagem - gerar boas-vindas personalizada com IA
+      const welcomePrompt = `Gere uma mensagem de boas-vindas personalizada para o Chat LawX, um assistente jurídico especializado.
+
+Jurisdição: ${jurisdiction.jurisdiction === 'ES' ? 'Espanha' : 'Portugal'}
+Idioma: ${jurisdiction.jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'}
+
+Requisitos:
+- Deve mencionar obrigatoriamente "Chat LawX"
+- Deve especificar que é um assistente jurídico
+- Deve ser adequado para a jurisdição ${jurisdiction.jurisdiction}
+- Tom amigável e profissional
+- Máximo 5 linhas
+- Use emojis apropriados
+- NÃO inclua pergunta sobre nome (será enviada separadamente)
+
+Exemplo de estrutura:
+[Emoji] [Saudação] Chat LawX!
+[Emoji] Sou teu assistente jurídico especializado em [jurisdição].
+[Emoji] [Mensagem de boas-vindas]`;
+
+      const welcomeMsg = await this.aiService.executeCustomPrompt(
+        welcomePrompt,
+        'gpt-3.5-turbo',
+        'Você é um especialista em criar mensagens de boas-vindas para assistentes jurídicos. Seja conciso e profissional.',
+        0.7,
+        300
+      );
+
+      // Segunda mensagem - pergunta sobre nome
+      const nameQuestion = jurisdiction.jurisdiction === 'ES' 
+        ? '📝 ¿Cuál es tu nombre?'
+        : '📝 Qual é o teu nome?';
+      
+      // Enviar primeira mensagem
+      await this.sendMessageWithTyping(phone, welcomeMsg, 2000);
+      
+      // Aguardar 2 segundos antes de enviar a pergunta sobre nome
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Enviar segunda mensagem
+      await this.sendMessageWithTyping(phone, nameQuestion, 1000);
+      
+      // Atualizar estado da conversa
+      this.setConversationState(phone, {
+        ...state,
+        isWaitingForWhatsAppName: true
+      });
+      
+    } catch (error) {
+      this.logger.error('Erro no fluxo de boas-vindas WhatsApp:', error);
+      const errorMessage = jurisdiction.jurisdiction === 'ES'
+        ? '❌ Ocurrió un error. Inténtalo de nuevo más tarde.'
+        : '❌ Ocorreu um erro. Tente novamente mais tarde.';
+      await this.sendMessage(phone, errorMessage);
+    }
+  }
+
+  /**
+   * Manipula mensagem de boas-vindas para retorno (ES/PT)
+   * Equivalente ao handleWelcomeBackMessage mas adaptado para ES/PT
+   */
+  private async handleWhatsAppWelcomeBackMessage(phone: string, session: any, jurisdiction: string): Promise<void> {
+    try {
+      let message = '';
+      if (jurisdiction === 'ES') {
+        message = `Bienvenido de nuevo ${session.name}, ¿en qué puedo ayudarte?`;
+      } else {
+        message = `Bem-vindo novamente ${session.name}, em que posso ajudá-lo?`;
+      }
+      
+      await this.sendMessage(phone, message);
+      
+      // Atualizar lastMessageSent
+      await this.updateWhatsAppLastMessageSent(phone, jurisdiction);
+      
+      this.logger.log(`👋 Mensagem de boas-vindas enviada para ${session.name} (${jurisdiction})`);
+    } catch (error) {
+      this.logger.error(`❌ Erro ao enviar mensagem de boas-vindas para ${phone}:`, error);
     }
   }
 
@@ -458,7 +691,7 @@ export class WhatsAppService {
       if (state.isWaitingForBrazilianName) {
         // Usuário já enviou o nome
         if (text.length < 2) {
-          await this.sendMessage(phone, '❌ Por favor, informe um nome válido com pelo menos 2 caracteres.');
+          await this.sendMessageWithTyping(phone, '❌ Por favor, informe um nome válido com pelo menos 2 caracteres.', 1000);
           return;
         }
 
@@ -468,7 +701,7 @@ export class WhatsAppService {
         // Mensagem de boas-vindas
         const response = `🎉 Olá, ${text}! Seja bem-vindo ao Chat LawX!\n\n🇧🇷 Sou seu assistente jurídico especializado em legislação brasileira.\n\n💬 Como posso ajudá-lo hoje?\n\nVocê pode:\n• Fazer perguntas sobre direito\n• Enviar documentos para análise\n• Solicitar orientações jurídicas\n\nDigite "MENU" para ver todas as opções disponíveis.`;
         
-        await this.sendMessage(phone, response);
+        await this.sendMessageWithTyping(phone, response, 2000);
         
         // Limpar estado da conversa
         this.clearConversationState(phone);
@@ -480,7 +713,7 @@ export class WhatsAppService {
       // Primeira mensagem - enviar boas-vindas e solicitar nome
       const response = `🇧🇷 Olá! Seja bem-vindo ao Chat LawX!\n\nSou seu assistente jurídico especializado em legislação brasileira.\n\nPara personalizar seu atendimento, preciso saber seu nome.\n\n📝 Qual é o seu nome completo?`;
       
-      await this.sendMessage(phone, response);
+      await this.sendMessageWithTyping(phone, response, 2000);
       
       // Atualizar estado da conversa
       this.setConversationState(phone, {
@@ -508,7 +741,21 @@ export class WhatsAppService {
       }
 
       // Detectar jurisdição baseada no número de telefone
-      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      let jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      
+        // 🧪 TESTE: Verificar se o número está no array de teste para forçar fluxo ES
+        if (this.testNumbersForESFlow.includes(phone)) {
+          this.logger.log(`🧪 NÚMERO DE TESTE DETECTADO: ${phone} - Forçando fluxo ES`);
+          jurisdiction = {
+            jurisdiction: 'ES',
+            ddi: '34',
+            country: 'Spain',
+            isValid: true,
+            config: jurisdiction.config, // Manter a configuração original
+            isForced: true // Marcar como forçada para evitar sobrescrita
+          };
+        }
+      
       this.logger.log(`Jurisdição detectada: ${jurisdiction.jurisdiction} para ${phone}`);
 
       // Extrair texto da mensagem
@@ -574,7 +821,7 @@ export class WhatsAppService {
       if (state.isInAnalysis) {
         // Verificar timeout (10 minutos)
         if (this.checkAnalysisTimeout(state)) {
-          await this.sendMessage(phone, this.getAnalysisTimeoutMessage('BR'));
+          await this.sendMessageWithTyping(phone, this.getAnalysisTimeoutMessage('BR'), 1500);
           this.setConversationState(phone, { ...state, isInAnalysis: false, analysisStartTime: undefined });
           return;
         }
@@ -616,7 +863,7 @@ export class WhatsAppService {
 
       if (message.message?.documentMessage) {
         this.logger.log('📄 Processando documento jurídico (BR)');
-        await this.handleDocumentMessage(message, user, phone);
+        await this.handleDocumentMessage(message, user, phone, jurisdiction.jurisdiction);
         return;
       }
 
@@ -632,9 +879,21 @@ export class WhatsAppService {
 
   private async processPortugueseMessage(message: any, phone: string, text: string, state: ConversationState, jurisdiction: any): Promise<void> {
     try {
-      this.logger.log('🇵🇹 Processando mensagem de usuário português...');      
-      // Buscar ou criar usuário local
-      const user = await this.usersService.getOrCreateUser(phone);
+      this.logger.log('🇵🇹 Processando mensagem de usuário português...');
+      
+      // 🔒 PRESERVAR JURISDIÇÃO FORÇADA: Se foi forçada para teste, manter durante todo o fluxo
+      if (jurisdiction.isForced) {
+        this.logger.log(`🔒 Mantendo jurisdição forçada: ${jurisdiction.jurisdiction} para ${phone}`);
+      }
+
+      // ✅ PRIMEIRO: Verificar se está no fluxo de coleta de nome
+      if (state.isWaitingForWhatsAppName) {
+        await this.handleWhatsAppUserWelcome(phone, text, state, jurisdiction);
+        return;
+      }
+
+      // Buscar ou criar usuário local com jurisdição forçada
+      const user = await this.usersService.getOrCreateUser(phone, jurisdiction.jurisdiction);
       
       // Verificar se usuário não está registrado
       if (!user || !user.is_registered) {
@@ -642,11 +901,32 @@ export class WhatsAppService {
         return;
       }
 
+      // ✅ NOVO: Verificar se usuário tem sessão ativa na tabela whatsapp_sessions
+      const sessionResult = await this.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
+      
+      if (!sessionResult.session) {
+        // Usuário não tem sessão ativa - iniciar fluxo de boas-vindas
+        await this.handleWhatsAppUserWelcome(phone, text, state, jurisdiction);
+        return;
+      }
+      
+      // ✅ NOVO: Usuário tem sessão ativa - verificar se precisa de mensagem de boas-vindas
+      if (sessionResult.needsWelcomeBack) {
+        // Usuário tem sessão mas passou 1 hora - enviar mensagem de boas-vindas
+        await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdiction.jurisdiction);
+        // Continuar processamento normal após mensagem
+      } else {
+        this.logger.log(`✅ Usuário português com sessão ativa: ${sessionResult.session.name}`);
+      }
+      
+      // ✅ NOVO: Atualizar lastMessageSent para esta interação
+      await this.updateWhatsAppLastMessageSent(phone, jurisdiction.jurisdiction);
+
       // PRIMEIRO: Verificar se está em análise de documento
       if (state.isInAnalysis) {
         // Verificar timeout (10 minutos)
         if (this.checkAnalysisTimeout(state)) {
-          await this.sendMessage(phone, this.getAnalysisTimeoutMessage('PT'));
+          await this.sendMessageWithTyping(phone, this.getAnalysisTimeoutMessage('PT'), 1500);
           this.setConversationState(phone, { ...state, isInAnalysis: false, analysisStartTime: undefined });
           return;
         }
@@ -682,19 +962,19 @@ export class WhatsAppService {
 
       if (message.message?.audioMessage) {
         this.logger.log('🎵 Processando áudio jurídico (PT)');
-        await this.handleAudioMessage(message, user, phone);
+        await this.handleAudioMessage(message, user, phone, jurisdiction.jurisdiction);
         return;
       }
 
       if (message.message?.documentMessage) {
         this.logger.log('📄 Processando documento jurídico (PT)');
-        await this.handleDocumentMessage(message, user, phone);
+        await this.handleDocumentMessage(message, user, phone, jurisdiction.jurisdiction);
         return;
       }
 
       // Processar texto
       this.logger.log('📝 Processando texto jurídico (PT)');
-      await this.handleTextMessage(text, user, phone, state);
+      await this.handleTextMessage(text, user, phone, state, jurisdiction.jurisdiction);
 
     } catch (error) {
       this.logger.error('Erro ao processar mensagem portuguesa:', error);
@@ -705,9 +985,20 @@ export class WhatsAppService {
   private async processSpanishMessage(message: any, phone: string, text: string, state: ConversationState, jurisdiction: any): Promise<void> {
     try {
       this.logger.log('🇪🇸 Processando mensagem de usuário espanhol...');
+      
+      // 🔒 PRESERVAR JURISDIÇÃO FORÇADA: Se foi forçada para teste, manter durante todo o fluxo
+      if (jurisdiction.isForced) {
+        this.logger.log(`🔒 Mantendo jurisdição forçada: ${jurisdiction.jurisdiction} para ${phone}`);
+      }
 
-      // Buscar ou criar usuário local
-      const user = await this.usersService.getOrCreateUser(phone);
+      // ✅ PRIMEIRO: Verificar se está no fluxo de coleta de nome
+      if (state.isWaitingForWhatsAppName) {
+        await this.handleWhatsAppUserWelcome(phone, text, state, jurisdiction);
+        return;
+      }
+
+      // Buscar ou criar usuário local com jurisdição forçada
+      const user = await this.usersService.getOrCreateUser(phone, jurisdiction.jurisdiction);
       
       // Verificar se usuário não está registrado
       if (!user || !user.is_registered) {
@@ -715,11 +1006,32 @@ export class WhatsAppService {
         return;
       }
 
+      // ✅ NOVO: Verificar se usuário tem sessão ativa na tabela whatsapp_sessions
+      const sessionResult = await this.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
+      
+      if (!sessionResult.session) {
+        // Usuário não tem sessão ativa - iniciar fluxo de boas-vindas
+        await this.handleWhatsAppUserWelcome(phone, text, state, jurisdiction);
+        return;
+      }
+      
+      // ✅ NOVO: Usuário tem sessão ativa - verificar se precisa de mensagem de boas-vindas
+      if (sessionResult.needsWelcomeBack) {
+        // Usuário tem sessão mas passou 1 hora - enviar mensagem de boas-vindas
+        await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdiction.jurisdiction);
+        // Continuar processamento normal após mensagem
+      } else {
+        this.logger.log(`✅ Usuário espanhol com sessão ativa: ${sessionResult.session.name}`);
+      }
+      
+      // ✅ NOVO: Atualizar lastMessageSent para esta interação
+      await this.updateWhatsAppLastMessageSent(phone, jurisdiction.jurisdiction);
+
       // PRIMEIRO: Verificar se está em análise de documento
       if (state.isInAnalysis) {
         // Verificar timeout (10 minutos)
         if (this.checkAnalysisTimeout(state)) {
-          await this.sendMessage(phone, this.getAnalysisTimeoutMessage('ES'));
+          await this.sendMessageWithTyping(phone, this.getAnalysisTimeoutMessage('ES'), 1500);
           this.setConversationState(phone, { ...state, isInAnalysis: false, analysisStartTime: undefined });
           return;
         }
@@ -755,19 +1067,19 @@ export class WhatsAppService {
 
       if (message.message?.audioMessage) {
         this.logger.log('🎵 Processando áudio jurídico (ES)');
-        await this.handleAudioMessage(message, user, phone);
+        await this.handleAudioMessage(message, user, phone, jurisdiction.jurisdiction);
         return;
       }
 
       if (message.message?.documentMessage) {
         this.logger.log('📄 Processando documento jurídico (ES)');
-        await this.handleDocumentMessage(message, user, phone);
+        await this.handleDocumentMessage(message, user, phone, jurisdiction.jurisdiction);
         return;
       }
 
       // Processar texto
       this.logger.log('📝 Processando texto jurídico (ES)');
-      await this.handleTextMessage(text, user, phone, state);
+      await this.handleTextMessage(text, user, phone, state, jurisdiction.jurisdiction);
 
     } catch (error) {
       this.logger.error('Erro ao processar mensagem espanhola:', error);
@@ -786,7 +1098,7 @@ export class WhatsAppService {
         return;
       }
 
-      await this.sendMessage(phone, '🔍 Estou analisando o documento jurídico...');
+      await this.sendMessageWithTyping(phone, '🔍 Estou analisando o documento jurídico...', 2000);
       
       // Detectar jurisdição
       const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
@@ -817,13 +1129,13 @@ export class WhatsAppService {
     }
   }
 
-  private async handleTextMessage(text: string, user: User | null, phone: string, state: ConversationState): Promise<void> {
+  private async handleTextMessage(text: string, user: User | null, phone: string, state: ConversationState, forcedJurisdiction?: string): Promise<void> {
     try {
       this.logger.log('📝 Processando mensagem de texto jurídica:', text);
 
       // 0. Verificar se é comando "menu"
       if (text.toLowerCase().trim() === 'menu') {
-        await this.showLegalMenu(phone);
+        await this.showLegalMenu(phone, forcedJurisdiction || 'BR');
         return;
       }
 
@@ -846,7 +1158,7 @@ export class WhatsAppService {
       }
 
       // 3. Processar consulta jurídica
-      await this.handleLegalConsultation(text, phone, user);
+      await this.handleLegalConsultation(text, phone, user, forcedJurisdiction);
 
     } catch (error) {
       this.logger.error('❌ Erro ao processar mensagem de texto:', error);
@@ -854,13 +1166,13 @@ export class WhatsAppService {
     }
   }
   
-  private async handleAudioMessage(message: any, user: User, phone: string): Promise<void> {
+  private async handleAudioMessage(message: any, user: User, phone: string, forcedJurisdiction?: string): Promise<void> {
     try {
       this.logger.log('🎵 Processando mensagem de áudio...');
 
       this.logger.log('🎵 Mensagem de áudio tipo:', JSON.stringify(message.message?.base64, null, 2));
       // Enviar mensagem de processamento
-      await this.sendMessage(phone, '🎵 Processando seu áudio... Aguarde um momento.');
+      await this.sendMessageWithTyping(phone, '🎵 Processando seu áudio... Aguarde um momento.', 2000);
       
       let audioBuffer: Buffer | null = null;
 
@@ -884,15 +1196,18 @@ export class WhatsAppService {
       // Processar áudio para consulta jurídica
       const transcribedText = await this.aiService.processAudioForLegalConsultation(audioBuffer);
       
-      // Detectar jurisdição
-      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      // Usar jurisdição forçada se fornecida, senão detectar
+      const jurisdiction = forcedJurisdiction 
+        ? { jurisdiction: forcedJurisdiction }
+        : this.jurisdictionService.detectJurisdiction(phone);
       
       // Gerar resposta jurídica
       const response = await this.aiService.generateLegalResponse(
         transcribedText,
         phone,
         user?.id,
-        undefined // Sem conteúdo de documento
+        undefined, // Sem conteúdo de documento
+        forcedJurisdiction // Passar jurisdição forçada
       );
       
       await this.sendMessage(phone, response);
@@ -902,7 +1217,7 @@ export class WhatsAppService {
       
       // Verificar se é erro de limite atingido (PRIORIDADE MÁXIMA)
       if (error.message && error.message.includes('Limite de mensagens atingido')) {
-        await this.handleLimitReachedMessage(phone, user, error.message);
+        await this.handleLimitReachedMessage(phone, user, error.message, forcedJurisdiction);
         return;
       }
       
@@ -928,22 +1243,35 @@ export class WhatsAppService {
     }
   }
 
-  private async handleDocumentMessage(message: any, user: User | null, phone: string): Promise<void> {
+  private async handleDocumentMessage(message: any, user: User | null, phone: string, forcedJurisdiction?: string): Promise<void> {
     try {
       this.logger.log('📄 Processando mensagem de documento jurídico...');
+      
+      // ✅ NOVO: Verificar limite de análise de documentos ANTES de processar
+      if (user?.id) {
+        const usageCheck = await this.usageService.checkLimits(user.id, 'document_analysis', phone);
+        
+        if (!usageCheck.allowed) {
+          this.logger.warn(`🚫 Limite de análise de documentos atingido para usuário ${user.id}`);
+          await this.handleLimitReachedMessage(phone, user, usageCheck.message, forcedJurisdiction);
+          return;
+        }
+      }
       
       // Definir estado de análise
       const conversationState = this.getConversationState(phone);
       this.setConversationState(phone, {
         ...conversationState,
         isInAnalysis: true,
-        analysisStartTime: Date.now()
+        analysisStartTime: Date.now(),
+        jurisdiction: forcedJurisdiction // ✅ NOVO: Armazenar jurisdição forçada no estado
       });
       
       // Extrair base64 da mensagem
       const base64Data = this.extractBase64FromDocumentMessage(message);
       if (!base64Data) {
-        await this.sendMessage(phone, '❌ Não consegui extrair o documento da mensagem. Tente novamente.');
+        const errorMsg = this.getLocalizedErrorMessage('extract_document_failed', forcedJurisdiction);
+        await this.sendMessage(phone, errorMsg);
         return;
       }
 
@@ -953,18 +1281,21 @@ export class WhatsAppService {
       // Verificar tamanho do arquivo (limite 20MB)
       const fileSizeMB = documentBuffer.length / (1024 * 1024);
       if (fileSizeMB > 20) {
-        await this.sendMessage(phone, '❌ Arquivo muito grande. O limite é de 20MB. Envie um arquivo menor.');
+        const errorMsg = this.getLocalizedErrorMessage('file_too_large', forcedJurisdiction);
+        await this.sendMessage(phone, errorMsg);
         return;
       }
 
       // Detectar tipo de documento
       const mimeType = this.detectDocumentType(documentBuffer);
       if (!this.isSupportedDocumentType(mimeType)) {
-        await this.sendMessage(phone, '❌ Tipo de documento não suportado. Envie apenas PDF ou DOCX.');
+        const errorMsg = this.getLocalizedErrorMessage('unsupported_file_type', forcedJurisdiction);
+        await this.sendMessage(phone, errorMsg);
         return;
       }
 
-      await this.sendMessage(phone, '🔍 Estou analisando o documento jurídico...');
+      const analyzingMsg = this.getLocalizedMessage('analyzing_document', forcedJurisdiction);
+      await this.sendMessageWithTyping(phone, analyzingMsg, 2000);
 
       // Gerar nome do arquivo
       const fileName = this.generateDocumentFileName(mimeType);
@@ -972,26 +1303,36 @@ export class WhatsAppService {
       // Upload para Supabase Storage
       const fileUrl = await this.uploadService.uploadDocumentFile(documentBuffer, fileName);
 
-      // Enviar para endpoint de análise
-      const analysis = await this.analyzeDocumentWithExternalAPI(fileUrl);
+      // ✅ NOVO: Enviar para endpoint de análise com jurisdição
+      const analysis = await this.analyzeDocumentWithExternalAPI(fileUrl, forcedJurisdiction);
+
+      // ✅ NOVO: Formatar análise com localização por jurisdição
+      const formattedAnalysis = this.formatDocumentAnalysisForUser(analysis, forcedJurisdiction);
 
       // Enviar resposta para usuário
-      await this.sendMessage(phone, analysis);
+      await this.sendMessageWithTyping(phone, formattedAnalysis, 1500);
+      
+      // ✅ NOVO: Incrementar contador de análise de documentos
+      if (user?.id) {
+        await this.usageService.incrementUsage(user.id, 'document_analysis', phone);
+      }
       
       // Perguntar se deseja analisar outro documento
-      await this.sendMessage(phone, '\n\n🤔 Deseja analisar outro documento? Responda "sim" ou "não".');
+      const anotherDocMsg = this.getLocalizedMessage('analyze_another_document', forcedJurisdiction);
+      await this.sendMessageWithTyping(phone, anotherDocMsg, 1000);
 
     } catch (error) {
       this.logger.error('❌ Erro ao processar documento:', error);
       
       // Verificar se é erro de limite atingido (PRIORIDADE MÁXIMA)
       if (error.message && error.message.includes('Limite de mensagens atingido')) {
-        await this.handleLimitReachedMessage(phone, user, error.message);
+        await this.handleLimitReachedMessage(phone, user, error.message, forcedJurisdiction);
         return;
       }
       
       // Manter estado de análise e solicitar reenvio
-      await this.sendMessage(phone, '❌ Erro ao analisar o documento. Envie o documento novamente.');
+      const retryMsg = this.getLocalizedErrorMessage('document_analysis_failed', forcedJurisdiction);
+      await this.sendMessage(phone, retryMsg);
     }
   }
 
@@ -1028,37 +1369,42 @@ export class WhatsAppService {
     }
   }
 
-  private async handleLegalConsultation(text: string, phone: string, user: User | null): Promise<void> {
+  private async handleLegalConsultation(text: string, phone: string, user: User | null, forcedJurisdiction?: string): Promise<void> {
     try {
-      // Detectar jurisdição
-      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      // Usar jurisdição forçada se fornecida, senão detectar
+      const jurisdiction = forcedJurisdiction 
+        ? { jurisdiction: forcedJurisdiction }
+        : this.jurisdictionService.detectJurisdiction(phone);
       
       // Gerar resposta jurídica
       const response = await this.aiService.generateLegalResponse(
         text,
         phone,
         user?.id,
-        undefined // Sem conteúdo de documento
+        undefined, // Sem conteúdo de documento
+        forcedJurisdiction // Passar jurisdição forçada
       );
       
-      await this.sendMessage(phone, response);
+      await this.sendMessageWithTyping(phone, response, 2000);
       
     } catch (error) {
       this.logger.error('Erro ao processar consulta jurídica:', error);
       
       // Verificar se é erro de limite atingido
       if (error.message && error.message.includes('Limite de mensagens atingido')) {
-        await this.handleLimitReachedMessage(phone, user, error.message);
+        await this.handleLimitReachedMessage(phone, user, error.message, forcedJurisdiction);
       } else {
         await this.sendMessage(phone, '❌ Erro ao processar sua consulta jurídica. Tente novamente.');
       }
     }
   }
 
-  private async handleLimitReachedMessage(phone: string, user: User | null, errorMessage: string): Promise<void> {
+  private async handleLimitReachedMessage(phone: string, user: User | null, errorMessage: string, forcedJurisdiction?: string): Promise<void> {
     try {
-      // Detectar jurisdição para personalizar mensagem
-      const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      // Usar jurisdição forçada se fornecida, senão detectar
+      const jurisdiction = forcedJurisdiction 
+        ? { jurisdiction: forcedJurisdiction }
+        : this.jurisdictionService.detectJurisdiction(phone);
       
       if (jurisdiction.jurisdiction === 'BR') {
         // Mensagem específica para usuários brasileiros
@@ -1071,16 +1417,34 @@ export class WhatsAppService {
         
         await this.sendMessage(phone, response);
       } else {
-        // Mensagem para PT/ES com opção de upgrade
-        const response = `🚫 **Limite de mensagens atingido!**\n\n` +
-          `Você utilizou todas as suas mensagens disponíveis.\n\n` +
-          `💡 **Que tal fazer um upgrade?**\n` +
-          `• Acesse planos premium com mensagens ilimitadas\n` +
-          `• Recursos avançados de análise jurídica\n` +
-          `• Suporte prioritário\n\n` +
-          `🔄 Digite "UPGRADE" para ver os planos disponíveis ou "MENU" para outras opções.`;
-        
-        await this.sendMessage(phone, response);
+        // Para PT/ES - usar mensagem localizada com IA
+        try {
+          // Extrair informações do erro para personalizar a mensagem
+          const usageMatch = errorMessage.match(/(\d+) de (\d+)/);
+          const currentUsage = usageMatch ? parseInt(usageMatch[1]) : 0;
+          const limit = usageMatch ? parseInt(usageMatch[2]) : 0;
+          
+          const localizedMessage = await this.generateLimitExceededMessage(
+            jurisdiction.jurisdiction, 
+            currentUsage, 
+            limit
+          );
+          
+          await this.sendMessage(phone, localizedMessage);
+        } catch (aiError) {
+          this.logger.error('Erro ao gerar mensagem localizada:', aiError);
+          
+          // Fallback para mensagem estática
+          const response = `🚫 **Limite de mensagens atingido!**\n\n` +
+            `Você utilizou todas as suas mensagens disponíveis.\n\n` +
+            `💡 **Que tal fazer um upgrade?**\n` +
+            `• Acesse planos premium com mensagens ilimitadas\n` +
+            `• Recursos avançados de análise jurídica\n` +
+            `• Suporte prioritário\n\n` +
+            `🔄 Digite "UPGRADE" para ver os planos disponíveis ou "MENU" para outras opções.`;
+          
+          await this.sendMessage(phone, response);
+        }
       }
       
     } catch (error) {
@@ -1090,23 +1454,61 @@ export class WhatsAppService {
   }
 
   /**
-   * Mostra menu jurídico
+   * Mostra menu jurídico localizado
    */
-  private async showLegalMenu(phone: string): Promise<void> {
-    const menu = `⚖️ **Chat LawX - Menu Jurídico**\n\n` +
-      `📋 **Funcionalidades Disponíveis:**\n` +
-      `• Envie documentos jurídicos (contratos, petições, etc.)\n` +
-      `• Faça consultas jurídicas por texto\n` +
-      `• Análise de riscos em documentos\n` +
-      `• Sugestões de cláusulas contratuais\n` +
-      // `• Pesquisa de jurisprudência\n\n` +
-      `💡 **Como usar:**\n` +
-      `• Digite sua pergunta jurídica\n` +
-      `• Envie foto de documento para análise\n` +
-      // `• Use "upgrade" para ver planos premium\n\n` +
-      `⚠️ *Lembre-se: Este é um assistente informativo. Para casos específicos, consulte um advogado.*`;
-    
-    await this.sendMessage(phone, menu);
+  private async showLegalMenu(phone: string, jurisdiction: string): Promise<void> {
+    try {
+      // ✅ NOVO: Gerar menu localizado com IA
+      const menuPrompt = `Gere uma mensagem de menu jurídico para o Chat LawX, um assistente jurídico especializado.
+
+Jurisdição: ${jurisdiction === 'ES' ? 'Espanha' : jurisdiction === 'PT' ? 'Portugal' : 'Brasil'}
+Idioma: ${jurisdiction === 'ES' ? 'Espanhol' : jurisdiction === 'PT' ? 'Português europeu' : 'Português brasileiro'}
+
+Use obrigatoriamente no idioma ${jurisdiction === 'ES' ? 'Espanhol' : jurisdiction === 'PT' ? 'Português europeu' : 'Português brasileiro'} para responder.
+
+Requisitos:
+- Deve mencionar obrigatoriamente "Chat LawX"
+- Deve especificar que é um assistente jurídico
+- Tom profissional e útil
+- Máximo 8 linhas
+- Use emojis apropriados apenas na primeira linha
+- Funcionalidades: Enviar documentos jurídicos, Fazer consultas jurídicas por texto ou audio.
+- Incluir instruções de uso: Digite pergunta jurídica, Envie foto/documento para análise
+- Aviso: Este é um Assistente informativo, caso precise de uma consulta jurídica específica, consulte um advogado.
+
+Estrutura:
+[Emoji] *[Chat LawX - Menu Jurídico]*
+*Funcionalidades Disponíveis:*
+[Lista de funcionalidades]
+*Como usar:*
+• [Instruções]
+*Aviso sobre consulta a advogado*`;
+
+      const localizedMenu = await this.aiService.executeCustomPrompt(
+        menuPrompt,
+        'gpt-3.5-turbo',
+        'Você é um especialista em criar menus jurídicos localizados para assistentes jurídicos. Seja profissional e útil.',
+        0.7
+      );
+      
+      await this.sendMessageWithTyping(phone, localizedMenu, 1500);
+    } catch (error) {
+      this.logger.error(`❌ Erro ao gerar menu localizado:`, error);
+      
+      // Fallback para menu padrão em português brasileiro
+      const fallbackMenu = `⚖️ **Chat LawX - Menu Jurídico**\n\n` +
+        `📋 **Funcionalidades Disponíveis:**\n` +
+        `• Envie documentos jurídicos (contratos, petições, etc.)\n` +
+        `• Faça consultas jurídicas por texto\n` +
+        `• Análise de riscos em documentos\n` +
+        `• Sugestões de cláusulas contratuais\n` +
+        `💡 **Como usar:**\n` +
+        `• Digite sua pergunta jurídica\n` +
+        `• Envie foto de documento para análise\n` +
+        `⚠️ *Lembre-se: Este é um assistente informativo. Para casos específicos, consulte um advogado.*`;
+      
+      await this.sendMessageWithTyping(phone, fallbackMenu, 1500);
+    }
   }
 
   private async detectUpgradeIntent(text: string, userId: string): Promise<{
@@ -1602,7 +2004,13 @@ export class WhatsAppService {
     }
   }
 
-  async sendMessage(phone: string, message: string): Promise<void> {
+  /**
+   * Envia mensagem de texto via WhatsApp com typing presence integrado
+   * @param phone - Número do destinatário
+   * @param message - Texto da mensagem
+   * @param typingDelay - Tempo em milissegundos para typing presence (padrão: 1500ms, undefined para usar padrão, 0 para desabilitar)
+   */
+  async sendMessage(phone: string, message: string, typingDelay?: number): Promise<void> {
     try {
       const evolutionApiUrl = this.configService.get('EVOLUTION_API_URL');
       const instanceName = this.configService.get('EVOLUTION_INSTANCE_NAME');
@@ -1611,6 +2019,16 @@ export class WhatsAppService {
       console.log('📤 Enviando mensagem para:', phone);
       console.log('📤 URL da API:', `${evolutionApiUrl}/message/sendText/${instanceName}`);
       console.log('📤 Mensagem:', message);
+      console.log('⌨️ Typing delay:', typingDelay || 'padrão (1500ms)');
+
+      // ✅ NOVO: Enviar typing presence antes da mensagem (se delay especificado ou usar padrão)
+      if (typingDelay !== 0) {
+        const delay = typingDelay || 1500; // Delay padrão de 1.5 segundos
+        await this.sendTypingPresence(phone, delay);
+        
+        // Aguardar o delay antes de enviar a mensagem
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
 
       const response = await axios.post(
         `${evolutionApiUrl}/message/sendText/${instanceName}`,
@@ -1627,11 +2045,135 @@ export class WhatsAppService {
       );
 
       console.log('✅ Mensagem enviada com sucesso:', response.data);
-      this.logger.log(`Mensagem enviada para ${phone}`);
+      this.logger.log(`Mensagem enviada para ${phone}${typingDelay !== undefined ? ` (delay: ${typingDelay || 1500}ms)` : ''}`);
     } catch (error) {
       console.error('❌ Erro ao enviar mensagem:', error);
       console.error('❌ Detalhes do erro:', error.response?.data);
       this.logger.error('Erro ao enviar mensagem:', error);
+    }
+  }
+
+  /**
+   * Envia mensagem com typing presence integrado
+   * @param phone - Número do destinatário
+   * @param message - Texto da mensagem
+   * @param typingDelay - Tempo em milissegundos para typing presence (padrão: 1500ms, 0 para desabilitar)
+   */
+  async sendMessageWithTyping(phone: string, message: string, typingDelay: number = 1500): Promise<void> {
+    await this.sendMessage(phone, message, typingDelay);
+  }
+
+  /**
+   * Envia mensagem sem typing presence (para casos especiais)
+   * @param phone - Número do destinatário
+   * @param message - Texto da mensagem
+   */
+  async sendMessageInstant(phone: string, message: string): Promise<void> {
+    await this.sendMessage(phone, message, 0);
+  }
+
+  /**
+   * Simula ação "Digitando..." no WhatsApp
+   * @param phone - Número do destinatário
+   * @param delay - Tempo em milissegundos para manter o status (padrão: 1200ms)
+   */
+  async sendTypingPresence(phone: string, delay: number = 1200): Promise<void> {
+    try {
+      const evolutionApiUrl = this.configService.get('EVOLUTION_API_URL');
+      const instanceName = this.configService.get('EVOLUTION_INSTANCE_NAME');
+      const apiKey = this.configService.get('EVOLUTION_API_KEY');
+
+      console.log('⌨️ Enviando status "Digitando..." para:', phone);
+      console.log('⌨️ Delay:', delay, 'ms');
+
+      const response = await axios.post(
+        `${evolutionApiUrl}/chat/sendPresence/${instanceName}`,
+        {
+          number: phone,
+          delay: delay,
+          presence: 'composing'
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': apiKey,
+          },
+        }
+      );
+
+      console.log('✅ Status "Digitando..." enviado com sucesso:', response.data);
+      this.logger.log(`Status "Digitando..." enviado para ${phone}`);
+    } catch (error) {
+      console.error('❌ Erro ao enviar status "Digitando...":', error);
+      console.error('❌ Detalhes do erro:', error.response?.data);
+      this.logger.error('Erro ao enviar status "Digitando...":', error);
+      // Não lançar erro para não interromper o fluxo principal
+    }
+  }
+
+  /**
+   * Gera mensagem de limite excedido localizada usando IA
+   */
+  async generateLimitExceededMessage(jurisdiction: string, currentUsage: number, limit: number): Promise<string> {
+    try {
+      const prompt = `Gere uma mensagem de limite excedido para o Chat LawX, um assistente jurídico especializado.
+
+Jurisdição: ${jurisdiction === 'ES' ? 'Espanha' : 'Portugal'}
+Idioma: ${jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'}
+Uso atual: ${currentUsage} mensagens
+Limite: ${limit} mensagens
+
+Requisitos:
+- Deve mencionar obrigatoriamente "Chat LawX"
+- Deve informar que o limite de mensagens foi atingido
+- Deve mostrar o uso atual e o limite (${currentUsage}/${limit})
+- Deve sugerir opções para o usuário
+- Tom profissional e útil
+- Máximo 6 linhas
+- Use emojis apropriados
+- Inclua informações sobre upgrade de plano
+
+Exemplo de estrutura:
+[Emoji] [Aviso sobre limite atingido]
+[Emoji] [Informação sobre uso atual]
+[Emoji] [Opções disponíveis]
+[Emoji] [Informação sobre upgrade]`;
+
+      const message = await this.aiService.executeCustomPrompt(
+        prompt,
+        'gpt-3.5-turbo',
+        'Você é um especialista em criar mensagens de limite excedido para assistentes jurídicos. Seja claro e ofereça soluções.',
+        0.7,
+        400
+      );
+
+      this.logger.log(`✅ Mensagem de limite excedido gerada para ${jurisdiction}`);
+      return message;
+    } catch (error) {
+      this.logger.error(`❌ Erro ao gerar mensagem de limite excedido:`, error);
+      
+      // Fallback para mensagem estática
+      if (jurisdiction === 'ES') {
+        return `🚫 **¡Límite de mensajes alcanzado!**
+
+Has utilizado todas tus mensajes disponibles (${currentUsage}/${limit}).
+
+💡 **Opciones disponibles:**
+• Actualiza tu plan para obtener más mensajes
+• Espera al próximo período de renovación
+
+📞 **Soporte:** Contáctanos para más información.`;
+      } else {
+        return `🚫 **Limite de mensagens atingido!**
+
+Utilizou todas as suas mensagens disponíveis (${currentUsage}/${limit}).
+
+💡 **Opções disponíveis:**
+• Atualize o seu plano para obter mais mensagens
+• Aguarde o próximo período de renovação
+
+📞 **Suporte:** Entre em contacto connosco para mais informações.`;
+      }
     }
   }
 
@@ -1677,6 +2219,7 @@ export class WhatsAppService {
       isWaitingForEmail: false,
       isWaitingForConfirmation: false,
       isWaitingForBrazilianName: false,
+      isWaitingForWhatsAppName: false, // NOVO: Para controle de nome em ES/PT
       isInUpgradeFlow: false,
       isInRegistrationFlow: false,
       upgradeStep: 'introduction',
@@ -1692,6 +2235,7 @@ export class WhatsAppService {
       isWaitingForEmail: false,
       isWaitingForConfirmation: false,
       isWaitingForBrazilianName: false,
+      isWaitingForWhatsAppName: false, // NOVO: Para controle de nome em ES/PT
       isInUpgradeFlow: false,
       isInRegistrationFlow: false,
       registrationStep: 'introduction',
@@ -1724,12 +2268,12 @@ export class WhatsAppService {
 
     for (const [phone, state] of this.conversationStates.entries()) {
       if (state.isInAnalysis && state.analysisStartTime) {
-        // Detectar jurisdição baseada no número de telefone
-        const detectionResult = this.jurisdictionService.detectJurisdiction(phone);
+        // ✅ NOVO: Usar jurisdição armazenada no estado (para casos forçados) ou detectar
+        const jurisdiction = state.jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
         
         usersInAnalysis.push({
           phone,
-          jurisdiction: detectionResult.jurisdiction,
+          jurisdiction,
           analysisStartTime: state.analysisStartTime,
         });
       }
@@ -2774,30 +3318,17 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
     }
   }
 
-  private async analyzeDocumentWithExternalAPI(fileUrl: string): Promise<string> {
+  private async analyzeDocumentWithExternalAPI(fileUrl: string, jurisdiction?: string): Promise<any> {
     try {
       this.logger.log('🔍 Enviando documento para análise externa...');
+      
+      // ✅ NOVO: Gerar prompt localizado baseado na jurisdição
+      const promptText = this.generateLocalizedAnalysisPrompt(jurisdiction);
       
       const response = await axios.post(
         'https://us-central1-gleaming-nomad-443014-u2.cloudfunctions.net/vertex-LawX-personalizada',
         {
-          prompt_text: `Analise este documento jurídico e forneça um resumo completo e detalhado. 
-
-IMPORTANTE: Retorne a resposta EXATAMENTE no formato JSON abaixo, sem texto adicional:
-
-{
-  "documentType": "tipo do documento (contrato, petição, parecer, sentença, etc.)",
-  "parties": ["lista das partes envolvidas"],
-  "mainObjective": "objetivo principal do documento",
-  "importantPoints": ["lista dos pontos mais relevantes"],
-  "relevantClauses": ["cláusulas ou artigos mais importantes"],
-  "deadlinesAndValues": "prazos, valores e datas importantes",
-  "identifiedRisks": ["riscos ou problemas identificados"],
-  "recommendations": ["sugestões práticas"],
-  "executiveSummary": "resumo conciso dos pontos principais"
-}
-
-Seja específico, prático e forneça uma análise jurídica completa e útil.`,
+          prompt_text: promptText,
           file_url: fileUrl
         },
         {
@@ -2818,8 +3349,8 @@ Seja específico, prático e forneça uma análise jurídica completa e útil.`,
         throw new Error('Resposta inválida do serviço de análise');
       }
 
-      // Converter JSON para formato de texto legível
-      return this.formatDocumentAnalysisForUser(analysisData);
+      // Retornar dados JSON para formatação posterior
+      return analysisData;
     } catch (error) {
       this.logger.error('❌ Erro na análise externa:', error);
       
@@ -2869,7 +3400,7 @@ Seja específico, prático e forneça uma análise jurídica completa e útil.`,
         });
         
         // Mostrar menu legal
-        await this.showLegalMenu(phone);
+        await this.showLegalMenu(phone, jurisdiction);
         
       } else {
         // Resposta não reconhecida ou confiança baixa
@@ -2977,20 +3508,136 @@ Seja específico, prático e forneça uma análise jurídica completa e útil.`,
   }
 
   /**
-   * Formata análise do documento em texto legível para o usuário
+   * Gera prompt localizado para análise de documento baseado na jurisdição
    */
-  private formatDocumentAnalysisForUser(analysisData: any): string {
+  private generateLocalizedAnalysisPrompt(jurisdiction?: string): string {
+    const isSpanish = jurisdiction === 'ES';
+    const isPortuguese = jurisdiction === 'PT';
+    
+    if (isSpanish) {
+      return `Analiza este documento jurídico y proporciona un resumen completo y detallado.
+
+IMPORTANTE: Devuelve la respuesta EXACTAMENTE en el formato JSON siguiente, sin texto adicional:
+
+{
+  "documentType": "tipo de documento (contrato, petición, dictamen, sentencia, etc.)",
+  "parties": ["lista de las partes involucradas"],
+  "mainObjective": "objetivo principal del documento",
+  "importantPoints": ["lista de los puntos más relevantes"],
+  "relevantClauses": ["cláusulas o artículos más importantes"],
+  "deadlinesAndValues": "plazos, valores y fechas importantes",
+  "identifiedRisks": ["riesgos o problemas identificados"],
+  "recommendations": ["sugerencias prácticas"],
+  "executiveSummary": "resumen conciso de los puntos principales"
+}
+
+Sé específico, práctico y proporciona un análisis jurídico completo y útil.`;
+    }
+    
+    if (isPortuguese) {
+      return `Analisa este documento jurídico e fornece um resumo completo e detalhado.
+
+IMPORTANTE: Retorna a resposta EXATAMENTE no formato JSON abaixo, sem texto adicional:
+
+{
+  "documentType": "tipo do documento (contrato, petição, parecer, sentença, etc.)",
+  "parties": ["lista das partes envolvidas"],
+  "mainObjective": "objetivo principal do documento",
+  "importantPoints": ["lista dos pontos mais relevantes"],
+  "relevantClauses": ["cláusulas ou artigos mais importantes"],
+  "deadlinesAndValues": "prazos, valores e datas importantes",
+  "identifiedRisks": ["riscos ou problemas identificados"],
+  "recommendations": ["sugestões práticas"],
+  "executiveSummary": "resumo conciso dos pontos principais"
+}
+
+Seja específico, prático e forneça uma análise jurídica completa e útil.`;
+    }
+    
+    // Default para Brasil (português brasileiro)
+    return `Analise este documento jurídico e forneça um resumo completo e detalhado. 
+
+IMPORTANTE: Retorne a resposta EXATAMENTE no formato JSON abaixo, sem texto adicional:
+
+{
+  "documentType": "tipo do documento (contrato, petição, parecer, sentença, etc.)",
+  "parties": ["lista das partes envolvidas"],
+  "mainObjective": "objetivo principal do documento",
+  "importantPoints": ["lista dos pontos mais relevantes"],
+  "relevantClauses": ["cláusulas ou artigos mais importantes"],
+  "deadlinesAndValues": "prazos, valores e datas importantes",
+  "identifiedRisks": ["riscos ou problemas identificados"],
+  "recommendations": ["sugestões práticas"],
+  "executiveSummary": "resumo conciso dos pontos principais"
+}
+
+Seja específico, prático e forneça uma análise jurídica completa e útil.`;
+  }
+
+  /**
+   * Formata análise do documento em texto legível para o usuário (localizado)
+   */
+  private formatDocumentAnalysisForUser(analysisData: any, jurisdiction?: string): string {
     try {
-      let formattedText = '📄 **ANÁLISE JURÍDICA DO DOCUMENTO**\n\n';
+      const isSpanish = jurisdiction === 'ES';
+      const isPortuguese = jurisdiction === 'PT';
+      
+      let formattedText: string;
+      let labels: any;
+      
+      if (isSpanish) {
+        formattedText = '📄 **ANÁLISIS JURÍDICO DEL DOCUMENTO**\n\n';
+        labels = {
+          documentType: '📋 **Tipo de Documento:**',
+          parties: '👥 **Partes Involucradas:**',
+          mainObjective: '🎯 **Objetivo Principal:**',
+          importantPoints: '⭐ **Puntos Importantes:**',
+          relevantClauses: '📜 **Cláusulas/Artículos Relevantes:**',
+          deadlinesAndValues: '⏰ **Plazos y Valores:**',
+          identifiedRisks: '⚠️ **Riesgos Identificados:**',
+          recommendations: '💡 **Recomendaciones:**',
+          executiveSummary: '📝 **Resumen Ejecutivo:**',
+          completed: '✅ *¡Análisis completado con éxito!*'
+        };
+      } else if (isPortuguese) {
+        formattedText = '📄 **ANÁLISE JURÍDICA DO DOCUMENTO**\n\n';
+        labels = {
+          documentType: '📋 **Tipo de Documento:**',
+          parties: '👥 **Partes Envolvidas:**',
+          mainObjective: '🎯 **Objetivo Principal:**',
+          importantPoints: '⭐ **Pontos Importantes:**',
+          relevantClauses: '📜 **Cláusulas/Artigos Relevantes:**',
+          deadlinesAndValues: '⏰ **Prazos e Valores:**',
+          identifiedRisks: '⚠️ **Riscos Identificados:**',
+          recommendations: '💡 **Recomendações:**',
+          executiveSummary: '📝 **Resumo Executivo:**',
+          completed: '✅ *Análise concluída com sucesso!*'
+        };
+      } else {
+        // Default para Brasil
+        formattedText = '📄 **ANÁLISE JURÍDICA DO DOCUMENTO**\n\n';
+        labels = {
+          documentType: '📋 **Tipo de Documento:**',
+          parties: '👥 **Partes Envolvidas:**',
+          mainObjective: '🎯 **Objetivo Principal:**',
+          importantPoints: '⭐ **Pontos Importantes:**',
+          relevantClauses: '📜 **Cláusulas/Artigos Relevantes:**',
+          deadlinesAndValues: '⏰ **Prazos e Valores:**',
+          identifiedRisks: '⚠️ **Riscos Identificados:**',
+          recommendations: '💡 **Recomendações:**',
+          executiveSummary: '📝 **Resumo Executivo:**',
+          completed: '✅ *Análise concluída com sucesso!*'
+        };
+      }
 
       // Tipo de Documento
       if (analysisData.documentType) {
-        formattedText += `📋 **Tipo de Documento:** ${analysisData.documentType}\n\n`;
+        formattedText += `${labels.documentType} ${analysisData.documentType}\n\n`;
       }
 
       // Partes Envolvidas
       if (analysisData.parties && Array.isArray(analysisData.parties) && analysisData.parties.length > 0) {
-        formattedText += `👥 **Partes Envolvidas:**\n`;
+        formattedText += `${labels.parties}\n`;
         analysisData.parties.forEach((party: string, index: number) => {
           formattedText += `• ${party}\n`;
         });
@@ -2999,12 +3646,12 @@ Seja específico, prático e forneça uma análise jurídica completa e útil.`,
 
       // Objetivo Principal
       if (analysisData.mainObjective) {
-        formattedText += `🎯 **Objetivo Principal:**\n${analysisData.mainObjective}\n\n`;
+        formattedText += `${labels.mainObjective}\n${analysisData.mainObjective}\n\n`;
       }
 
       // Pontos Importantes
       if (analysisData.importantPoints && Array.isArray(analysisData.importantPoints) && analysisData.importantPoints.length > 0) {
-        formattedText += `⭐ **Pontos Importantes:**\n`;
+        formattedText += `${labels.importantPoints}\n`;
         analysisData.importantPoints.forEach((point: string, index: number) => {
           formattedText += `• ${point}\n`;
         });
@@ -3013,7 +3660,7 @@ Seja específico, prático e forneça uma análise jurídica completa e útil.`,
 
       // Cláusulas Relevantes
       if (analysisData.relevantClauses && Array.isArray(analysisData.relevantClauses) && analysisData.relevantClauses.length > 0) {
-        formattedText += `📜 **Cláusulas/Artigos Relevantes:**\n`;
+        formattedText += `${labels.relevantClauses}\n`;
         analysisData.relevantClauses.forEach((clause: string, index: number) => {
           formattedText += `• ${clause}\n`;
         });
@@ -3022,12 +3669,12 @@ Seja específico, prático e forneça uma análise jurídica completa e útil.`,
 
       // Prazos e Valores
       if (analysisData.deadlinesAndValues) {
-        formattedText += `⏰ **Prazos e Valores:**\n${analysisData.deadlinesAndValues}\n\n`;
+        formattedText += `${labels.deadlinesAndValues}\n${analysisData.deadlinesAndValues}\n\n`;
       }
 
       // Riscos Identificados
       if (analysisData.identifiedRisks && Array.isArray(analysisData.identifiedRisks) && analysisData.identifiedRisks.length > 0) {
-        formattedText += `⚠️ **Riscos Identificados:**\n`;
+        formattedText += `${labels.identifiedRisks}\n`;
         analysisData.identifiedRisks.forEach((risk: string, index: number) => {
           formattedText += `• ${risk}\n`;
         });
@@ -3036,7 +3683,7 @@ Seja específico, prático e forneça uma análise jurídica completa e útil.`,
 
       // Recomendações
       if (analysisData.recommendations && Array.isArray(analysisData.recommendations) && analysisData.recommendations.length > 0) {
-        formattedText += `💡 **Recomendações:**\n`;
+        formattedText += `${labels.recommendations}\n`;
         analysisData.recommendations.forEach((recommendation: string, index: number) => {
           formattedText += `• ${recommendation}\n`;
         });
@@ -3045,16 +3692,76 @@ Seja específico, prático e forneça uma análise jurídica completa e útil.`,
 
       // Resumo Executivo
       if (analysisData.executiveSummary) {
-        formattedText += `📝 **Resumo Executivo:**\n${analysisData.executiveSummary}\n\n`;
+        formattedText += `${labels.executiveSummary}\n${analysisData.executiveSummary}\n\n`;
       }
 
       formattedText += '---\n';
-      formattedText += '✅ *Análise concluída com sucesso!*';
+      formattedText += labels.completed;
 
       return formattedText;
     } catch (error) {
       this.logger.error('❌ Erro ao formatar análise:', error);
       return '❌ Erro ao processar a análise do documento.';
     }
+  }
+
+  /**
+   * Obtém mensagem localizada baseada na jurisdição
+   */
+  private getLocalizedMessage(key: string, jurisdiction?: string): string {
+    const isSpanish = jurisdiction === 'ES';
+    const isPortuguese = jurisdiction === 'PT';
+    
+    const messages = {
+      analyzing_document: {
+        ES: '🔍 Estoy analizando el documento jurídico...',
+        PT: '🔍 Estou a analisar o documento jurídico...',
+        BR: '🔍 Estou analisando o documento jurídico...'
+      },
+      analyze_another_document: {
+        ES: '\n\n🤔 ¿Deseas analizar otro documento? Responde "sí" o "no".',
+        PT: '\n\n🤔 Desejas analisar outro documento? Responde "sim" ou "não".',
+        BR: '\n\n🤔 Deseja analisar outro documento? Responda "sim" ou "não".'
+      }
+    };
+    
+    if (isSpanish) return messages[key]?.ES || messages[key]?.BR;
+    if (isPortuguese) return messages[key]?.PT || messages[key]?.BR;
+    return messages[key]?.BR || messages[key]?.ES;
+  }
+
+  /**
+   * Obtém mensagem de erro localizada baseada na jurisdição
+   */
+  private getLocalizedErrorMessage(key: string, jurisdiction?: string): string {
+    const isSpanish = jurisdiction === 'ES';
+    const isPortuguese = jurisdiction === 'PT';
+    
+    const errorMessages = {
+      extract_document_failed: {
+        ES: '❌ No pude extraer el documento del mensaje. Inténtalo de nuevo.',
+        PT: '❌ Não consegui extrair o documento da mensagem. Tenta novamente.',
+        BR: '❌ Não consegui extrair o documento da mensagem. Tente novamente.'
+      },
+      file_too_large: {
+        ES: '❌ Archivo muy grande. El límite es de 20MB. Envía un archivo más pequeño.',
+        PT: '❌ Ficheiro muito grande. O limite é de 20MB. Envia um ficheiro mais pequeno.',
+        BR: '❌ Arquivo muito grande. O limite é de 20MB. Envie um arquivo menor.'
+      },
+      unsupported_file_type: {
+        ES: '❌ Tipo de documento no soportado. Envía solo PDF o DOCX.',
+        PT: '❌ Tipo de documento não suportado. Envia apenas PDF ou DOCX.',
+        BR: '❌ Tipo de documento não suportado. Envie apenas PDF ou DOCX.'
+      },
+      document_analysis_failed: {
+        ES: '❌ Error al analizar el documento. Envía el documento de nuevo.',
+        PT: '❌ Erro ao analisar o documento. Envia o documento novamente.',
+        BR: '❌ Erro ao analisar o documento. Envie o documento novamente.'
+      }
+    };
+    
+    if (isSpanish) return errorMessages[key]?.ES || errorMessages[key]?.BR;
+    if (isPortuguese) return errorMessages[key]?.PT || errorMessages[key]?.BR;
+    return errorMessages[key]?.BR || errorMessages[key]?.ES;
   }
 } 

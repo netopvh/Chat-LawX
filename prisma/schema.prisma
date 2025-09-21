@@ -17,13 +17,14 @@ model User {
   jurisdiction  String
   name          String?
   email         String?
-  messagesCount Int      @default(0)
   isRegistered  Boolean  @default(false)
+  // NOVOS CAMPOS PARA CONTROLE DE SESSÃO WHATSAPP
+  lastWhatsAppInteraction DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   legalDocuments LegalDocument[]
-  usage          Usage[]
+  whatsappSession WhatsAppSession?
 
   @@map("users")
 }
@@ -40,19 +41,6 @@ model LegalDocument {
   user User @relation(fields: [userId], references: [id])
   
   @@map("legal_documents")
-}
-
-model Usage {
-  id            String   @id @default(cuid())
-  userId        String
-  messagesCount Int      @default(0)
-  jurisdiction  String
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
-  user User @relation(fields: [userId], references: [id])
-  
-  @@map("usage")
 }
 
 model LegalPrompt {
@@ -194,4 +182,37 @@ model UsageTracking {
   subscription            Subscription @relation(fields: [subscriptionId], references: [id])
   
   @@map("usage_tracking")
+}
+
+// NOVAS ENTIDADES PARA CONTROLE DE SESSÃO WHATSAPP (ES/PT)
+model WhatsAppSession {
+  id                String   @id @default(cuid())
+  phone             String   @unique
+  name              String
+  jurisdiction      String   // ES, PT
+  ddi               String   // 34, 351
+  lastMessageSent   DateTime @default(now())
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  user              User?    @relation(fields: [phone], references: [phone])
+  messages          WhatsAppMessage[]
+  
+  @@map("whatsapp_sessions")
+}
+
+model WhatsAppMessage {
+  id            String   @id @default(cuid())
+  sessionId     String
+  phone         String
+  messageType   String   // text, document, image, audio
+  content       String?  @db.Text
+  direction     String   // inbound, outbound
+  jurisdiction  String
+  createdAt     DateTime @default(now())
+  
+  session       WhatsAppSession @relation(fields: [sessionId], references: [id])
+  
+  @@map("whatsapp_messages")
 }

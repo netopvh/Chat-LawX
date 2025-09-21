@@ -42,7 +42,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       where: { phone },
       include: {
         legalDocuments: true,
-        usage: true,
       },
     });
   }
@@ -52,59 +51,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       where: { ddi },
       include: {
         legalDocuments: true,
-        usage: true,
       },
     });
   }
 
   async incrementUserMessages(userId: string) {
-    return this.user.update({
-      where: { id: userId },
-      data: {
-        messagesCount: {
-          increment: 1,
-        },
-      },
-    });
-  }
-
-  async createUsageRecord(userId: string, jurisdiction: string) {
-    return this.usage.create({
-      data: {
-        userId,
-        jurisdiction,
-        messagesCount: 1,
-      },
-    });
-  }
-
-  async updateUsageRecord(usageId: string) {
-    return this.usage.update({
-      where: { id: usageId },
-      data: {
-        messagesCount: {
-          increment: 1,
-        },
-        updatedAt: new Date(),
-      },
-    });
-  }
-
-  async getUsageByUser(userId: string) {
-    return this.usage.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-    });
-  }
-
-  async getUsageByJurisdiction(jurisdiction: string) {
-    return this.usage.findMany({
-      where: { jurisdiction },
-      include: {
-        user: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    // Este método agora é apenas um placeholder
+    // O incremento real é feito no UsageTracking
+    this.logger.log(`📈 Incremento de mensagem para usuário: ${userId} (processado via UsageTracking)`);
   }
 
   // Métodos para Legal Prompts
@@ -166,5 +120,292 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         updatedAt: new Date(),
       },
     });
+  }
+
+  // Métodos para WhatsApp Sessions
+  async findWhatsAppSessionByPhone(phone: string) {
+    return this.whatsAppSession.findUnique({
+      where: { phone },
+      include: {
+        user: true,
+        messages: true,
+      },
+    });
+  }
+
+  async createWhatsAppSession(data: {
+    phone: string;
+    name: string;
+    jurisdiction: string;
+    ddi: string;
+  }) {
+    return this.whatsAppSession.create({
+      data: {
+        phone: data.phone,
+        name: data.name,
+        jurisdiction: data.jurisdiction,
+        ddi: data.ddi,
+        lastMessageSent: new Date(),
+        isActive: true,
+      },
+    });
+  }
+
+  async updateWhatsAppSession(phone: string, data: {
+    lastMessageSent?: Date;
+    isActive?: boolean;
+  }) {
+    return this.whatsAppSession.update({
+      where: { phone },
+      data: {
+        ...data,
+        updatedAt: new Date(),
+      },
+    });
+  }
+
+  async updateUserLastWhatsAppInteraction(phone: string) {
+    return this.user.update({
+      where: { phone },
+      data: {
+        lastWhatsAppInteraction: new Date(),
+      },
+    });
+  }
+
+  // Métodos para Assinaturas
+  async createFremiumSubscription(userId: string, jurisdiction: string) {
+    try {
+      this.logger.log(`🎁 Criando assinatura Fremium para usuário: ${userId} (${jurisdiction})`);
+      
+      // Buscar plano Fremium
+      const fremiumPlan = await this.plan.findFirst({
+        where: {
+          name: 'Fremium',
+          isActive: true,
+          jurisdiction: jurisdiction
+        }
+      });
+
+      if (!fremiumPlan) {
+        this.logger.error(`❌ Plano Fremium não encontrado para jurisdição: ${jurisdiction}`);
+        throw new Error(`Plano Fremium não encontrado para ${jurisdiction}`);
+      }
+
+      // Calcular datas do período
+      const now = new Date();
+      const periodEnd = new Date(now);
+      periodEnd.setMonth(periodEnd.getMonth() + 1); // 1 mês
+
+      // Criar assinatura Fremium
+      const subscription = await this.subscription.create({
+        data: {
+          userId: userId,
+          planId: fremiumPlan.id,
+          status: 'active',
+          billingCycle: 'monthly',
+          currentPeriodStart: now,
+          currentPeriodEnd: periodEnd,
+          jurisdiction: jurisdiction,
+          syncStatus: 'synced'
+        }
+      });
+
+      // Criar registro de uso inicial para o período da assinatura
+      await this.findOrCreateUsageTracking(
+        userId,
+        subscription.id,
+        now,
+        periodEnd,
+        jurisdiction
+      );
+
+      this.logger.log(`✅ Assinatura Fremium criada com sucesso: ${subscription.id}`);
+      this.logger.log(`📊 Registro de uso criado para período: ${now.toISOString()} - ${periodEnd.toISOString()}`);
+      return subscription;
+    } catch (error) {
+      this.logger.error(`❌ Erro ao criar assinatura Fremium para usuário ${userId}:`, error);
+      throw error;
+    }
+  }
+
+  async findUserSubscription(userId: string) {
+    return this.subscription.findFirst({
+      where: {
+        userId: userId,
+        status: 'active'
+      },
+      include: {
+        plan: true
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+  }
+
+  async findFremiumPlan(jurisdiction: string) {
+    return this.plan.findFirst({
+      where: {
+        name: 'Fremium',
+        isActive: true,
+        jurisdiction: jurisdiction
+      }
+    });
+  }
+
+  async findOrCreateUsageTracking(
+    userId: string, 
+    subscriptionId: string, 
+    periodStart: Date, 
+    periodEnd: Date, 
+    jurisdiction: string
+  ) {
+    try {
+      // Buscar registro de uso existente para o período
+      let usageTracking = await this.usageTracking.findFirst({
+        where: {
+          userId: userId,
+          subscriptionId: subscriptionId,
+          periodStart: periodStart,
+          periodEnd: periodEnd
+        }
+      });
+
+      // Se não existir, criar novo registro
+      if (!usageTracking) {
+        this.logger.log(`📊 Criando novo registro de uso para usuário: ${userId} (período: ${periodStart.toISOString()} - ${periodEnd.toISOString()})`);
+        
+        usageTracking = await this.usageTracking.create({
+          data: {
+            userId: userId,
+            subscriptionId: subscriptionId,
+            periodStart: periodStart,
+            periodEnd: periodEnd,
+            jurisdiction: jurisdiction,
+            messagesCount: 0,
+            consultationsCount: 0,
+            documentAnalysisCount: 0
+          }
+        });
+        
+        this.logger.log(`✅ Registro de uso criado: ${usageTracking.id}`);
+      }
+
+      return usageTracking;
+    } catch (error) {
+      this.logger.error(`❌ Erro ao buscar/criar registro de uso para usuário ${userId}:`, error);
+      throw error;
+    }
+  }
+
+  // Métodos para Verificação de Limites (ES/PT)
+  async validateUserLimits(userId: string, jurisdiction: string): Promise<{
+    isValid: boolean;
+    currentUsage: number;
+    limit: number;
+    remaining: number;
+    message: string;
+  }> {
+    try {
+      this.logger.log(`🔍 Validando limites para usuário: ${userId} (${jurisdiction})`);
+      
+      // Buscar assinatura ativa do usuário
+      const subscription = await this.findUserSubscription(userId);
+      
+      if (!subscription) {
+        this.logger.error(`❌ Nenhuma assinatura ativa encontrada para usuário: ${userId}`);
+        return {
+          isValid: false,
+          currentUsage: 0,
+          limit: 0,
+          remaining: 0,
+          message: 'Nenhuma assinatura ativa encontrada'
+        };
+      }
+
+      // Buscar plano para obter limites
+      const plan = subscription.plan;
+      
+      if (!plan) {
+        this.logger.error(`❌ Plano não encontrado para assinatura: ${subscription.id}`);
+        return {
+          isValid: false,
+          currentUsage: 0,
+          limit: 0,
+          remaining: 0,
+          message: 'Plano não encontrado'
+        };
+      }
+
+      // Buscar ou criar registro de uso para o período atual da assinatura
+      const usageTracking = await this.findOrCreateUsageTracking(
+        userId, 
+        subscription.id, 
+        subscription.currentPeriodStart, 
+        subscription.currentPeriodEnd, 
+        jurisdiction
+      );
+
+      const currentUsage = usageTracking.messagesCount;
+      const limit = plan.messageLimit || 0;
+      const remaining = Math.max(0, limit - currentUsage);
+      const isValid = currentUsage < limit;
+
+      this.logger.log(`📊 Limites do usuário ${userId}: ${currentUsage}/${limit} (${remaining} restantes)`);
+
+      return {
+        isValid,
+        currentUsage,
+        limit,
+        remaining,
+        message: isValid ? 'Limite válido' : 'Limite excedido'
+      };
+
+    } catch (error) {
+      this.logger.error(`❌ Erro ao validar limites para usuário ${userId}:`, error);
+      return {
+        isValid: false,
+        currentUsage: 0,
+        limit: 0,
+        remaining: 0,
+        message: 'Erro ao validar limites'
+      };
+    }
+  }
+
+  async incrementUserMessageCount(userId: string): Promise<void> {
+    try {
+      // Buscar assinatura ativa do usuário
+      const subscription = await this.findUserSubscription(userId);
+      
+      if (!subscription) {
+        this.logger.error(`❌ Nenhuma assinatura ativa encontrada para incrementar uso: ${userId}`);
+        return;
+      }
+
+      // Buscar ou criar registro de uso para o período atual
+      const usageTracking = await this.findOrCreateUsageTracking(
+        userId,
+        subscription.id,
+        subscription.currentPeriodStart,
+        subscription.currentPeriodEnd,
+        subscription.jurisdiction || 'PT' // fallback
+      );
+
+      // Incrementar contador de mensagens no registro de uso
+      await this.usageTracking.update({
+        where: { id: usageTracking.id },
+        data: {
+          messagesCount: {
+            increment: 1
+          }
+        }
+      });
+
+      this.logger.log(`📈 Contador de mensagens incrementado para usuário: ${userId} (uso: ${usageTracking.messagesCount + 1})`);
+    } catch (error) {
+      this.logger.error(`❌ Erro ao incrementar contador de mensagens para usuário ${userId}:`, error);
+    }
   }
 }

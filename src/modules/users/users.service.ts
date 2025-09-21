@@ -240,11 +240,22 @@ export class UsersService {
     return this.create({ phone, name });
   }
 
-  async getOrCreateUser(phone: string): Promise<User | null> {
+  async getOrCreateUser(phone: string, forcedJurisdiction?: string): Promise<User | null> {
     console.log('👤 Buscando ou criando usuário para:', phone);
     
-    // Detectar jurisdição baseada no número de telefone
-    const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+    // Usar jurisdição forçada se fornecida, senão detectar
+    let jurisdiction;
+    if (forcedJurisdiction) {
+      // Se jurisdição forçada, buscar configuração completa
+      jurisdiction = this.jurisdictionService.getJurisdictionConfig(forcedJurisdiction);
+      if (!jurisdiction) {
+        // Fallback para detecção normal se não encontrar configuração
+        jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      }
+    } else {
+      jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+    }
+    
     console.log(`🌍 Jurisdição detectada: ${jurisdiction.jurisdiction} para ${phone}`);
     
     // Para usuários brasileiros, buscar no Supabase teams (NÃO CRIAR)
@@ -276,7 +287,6 @@ export class UsersService {
           email: email,
           ddi: jurisdiction.ddi,
           jurisdiction: jurisdiction.jurisdiction,
-          messagesCount: 0, // Iniciar com 0 mensagens
           isRegistered: true, // Marcar como registrado
         }
       });
@@ -288,7 +298,7 @@ export class UsersService {
         is_registered: true,
         jurisdiction: user.jurisdiction,
         ddi: user.ddi,
-        messages_count: user.messagesCount,
+        messages_count: 0, // Controle de mensagens agora é via UsageTracking
         created_at: user.createdAt.toISOString(),
         updated_at: user.updatedAt.toISOString(),
       };
@@ -358,7 +368,7 @@ export class UsersService {
           is_registered: localUser.isRegistered,
           jurisdiction: localUser.jurisdiction,
           ddi: localUser.ddi,
-          messages_count: localUser.messagesCount,
+          messages_count: 0, // Controle de mensagens agora é via UsageTracking
           created_at: localUser.createdAt.toISOString(),
           updated_at: localUser.updatedAt.toISOString(),
         };
@@ -371,19 +381,27 @@ export class UsersService {
           ddi: jurisdiction.ddi,
           jurisdiction: jurisdiction.jurisdiction,
           name: '',
-          messagesCount: 0,
-          isRegistered: false, // Não registrado inicialmente
+          isRegistered: true, // ✅ REGISTRADO automaticamente para PT/ES
         }
       });
+      
+      // 🎁 CRIAR ASSINATURA FREMIUM AUTOMATICAMENTE
+      try {
+        await this.prismaService.createFremiumSubscription(newUser.id, jurisdiction.jurisdiction);
+        console.log(`🎁 Assinatura Fremium criada automaticamente para usuário: ${newUser.id}`);
+      } catch (subscriptionError) {
+        console.error(`❌ Erro ao criar assinatura Fremium:`, subscriptionError);
+        // Não falhar o processo por causa da assinatura, apenas logar o erro
+      }
       
       return {
         id: newUser.id,
         phone: newUser.phone,
         name: newUser.name || '',
-        is_registered: false,
+        is_registered: true, // ✅ REGISTRADO automaticamente
         jurisdiction: newUser.jurisdiction,
         ddi: newUser.ddi,
-        messages_count: newUser.messagesCount,
+        messages_count: 0, // Controle de mensagens agora é via UsageTracking
         created_at: newUser.createdAt.toISOString(),
         updated_at: newUser.updatedAt.toISOString(),
       };

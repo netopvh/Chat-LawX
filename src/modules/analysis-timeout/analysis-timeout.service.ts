@@ -91,7 +91,7 @@ export class AnalysisTimeoutService {
       const timeoutMs = 10 * 60 * 1000; // 10 minutos
 
       if (timeElapsed > timeoutMs) {
-        this.logger.log(`⏰ Timeout detectado para usuário ${user.phone} (${user.jurisdiction})`);
+        this.logger.log(`⏰ Timeout detectado para usuário ${user.phone} (${user.jurisdiction}) - Tempo decorrido: ${Math.round(timeElapsed / 1000)}s`);
         
         // Enviar mensagem de timeout
         await this.sendTimeoutMessage(user.phone, user.jurisdiction);
@@ -116,8 +116,9 @@ export class AnalysisTimeoutService {
   private async sendTimeoutMessage(phone: string, jurisdiction: string): Promise<void> {
     try {
       const timeoutMessage = this.getTimeoutMessage(jurisdiction);
-      await this.whatsappService.sendMessage(phone, timeoutMessage);
-      this.logger.log(`📤 Mensagem de timeout enviada para ${phone}`);
+      // ✅ NOVO: Usar sendMessageWithTyping para dar mais realismo à conversa
+      await this.whatsappService.sendMessageWithTyping(phone, timeoutMessage, 1500);
+      this.logger.log(`📤 Mensagem de timeout enviada para ${phone} (${jurisdiction})`);
     } catch (error) {
       this.logger.error(`❌ Erro ao enviar mensagem de timeout para ${phone}:`, error);
     }
@@ -139,9 +140,9 @@ export class AnalysisTimeoutService {
    */
   private getTimeoutMessage(jurisdiction: string): string {
     const messages = {
-      'BR': '⏰ Acho que não deseja enviar documento, estou saindo do modo de espera.\n\n📋 Como posso ajudá-lo hoje?',
-      'PT': '⏰ Acho que não deseja enviar documento, estou a sair do modo de espera.\n\n📋 Como posso ajudá-lo hoje?',
-      'ES': '⏰ Creo que no desea enviar documento, estoy saliendo del modo de espera.\n\n📋 ¿Cómo puedo ayudarle hoy?'
+      'BR': '⏰ Parece que você não vai enviar o documento agora. Saindo do modo de análise.\n\n📋 Como posso ajudá-lo hoje?',
+      'PT': '⏰ Parece que não vai enviar o documento agora. Saindo do modo de análise.\n\n📋 Como posso ajudá-lo hoje?',
+      'ES': '⏰ Parece que no vas a enviar el documento ahora. Saliendo del modo de análisis.\n\n📋 ¿Cómo puedo ayudarte hoy?'
     };
 
     return messages[jurisdiction] || messages['BR'];

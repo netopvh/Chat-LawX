@@ -630,11 +630,15 @@ Exemplos:
     message: string, 
     phoneNumber: string, 
     userId?: string,
-    documentContent?: string
+    documentContent?: string,
+    forcedJurisdiction?: string // Nova parâmetro para jurisdição forçada
   ): Promise<string> {
     try {
-      // Detectar jurisdição baseada no número de telefone
-      const jurisdiction = this.jurisdictionService.detectJurisdiction(phoneNumber);
+      // Usar jurisdição forçada se fornecida, senão detectar
+      const jurisdiction = forcedJurisdiction 
+        ? { jurisdiction: forcedJurisdiction }
+        : this.jurisdictionService.detectJurisdiction(phoneNumber);
+      
       this.logger.log(`Jurisdição detectada: ${jurisdiction.jurisdiction} para ${phoneNumber}`);
 
       // Validar limites de uso
@@ -865,10 +869,10 @@ Seja claro, objetivo e sempre mencione que é importante consultar um advogado p
           throw new Error(`Limite de mensagens atingido. Você usou ${validation.currentUsage} de ${validation.limit} mensagens permitidas.`);
         }
       } else if (limitControlType === 'local' && userId) {
-        // Para Portugal/Espanha - validar via Prisma
-        const user = await this.prismaService.findUserByPhone(userId);
-        if (user && user.messagesCount >= 100) { // Limite padrão para PT/ES
-          throw new Error('Limite de mensagens atingido. Entre em contato para upgrade do seu plano.');
+        // Para Portugal/Espanha - validar via Prisma com assinatura
+        const limitValidation = await this.prismaService.validateUserLimits(userId, jurisdiction);
+        if (!limitValidation.isValid) {
+          throw new Error(`Limite de mensagens atingido. Você usou ${limitValidation.currentUsage} de ${limitValidation.limit} mensagens permitidas.`);
         }
       }
     } catch (error) {
@@ -889,7 +893,7 @@ Seja claro, objetivo e sempre mencione que é importante consultar um advogado p
         await this.teamsService.incrementTeamUsage(userId);
       } else if (limitControlType === 'local' && userId) {
         // Para Portugal/Espanha - incrementar via Prisma
-        await this.prismaService.incrementUserMessages(userId);
+        await this.prismaService.incrementUserMessageCount(userId);
       }
     } catch (error) {
       this.logger.error('Erro ao incrementar contador de mensagens:', error);
@@ -1290,6 +1294,94 @@ Se não for nem confirmação nem negação clara, ambos devem ser false.`;
         confidence: 0.2,
         reasoning: 'erro na análise - usando fallback'
       };
+    }
+  }
+
+  /**
+   * Executa prompt personalizado com modelo especificado
+   * @param prompt - O prompt a ser executado
+   * @param model - Modelo a ser utilizado (gpt-4o, gpt-3.5-turbo, gemini-1.5-flash, etc.)
+   * @param systemMessage - Mensagem do sistema (opcional)
+   * @param temperature - Temperatura para geração (padrão: 0.3)
+   * @param maxTokens - Número máximo de tokens (opcional)
+   * @returns Resposta gerada pela IA
+   */
+  async executeCustomPrompt(
+    prompt: string,
+    model: 'gpt-4o' | 'gpt-3.5-turbo' | 'gpt-4' | 'gemini-1.5-flash' | 'gemini-1.5-pro' = 'gpt-4o',
+    systemMessage?: string,
+    temperature: number = 0.3,
+    maxTokens?: number
+  ): Promise<string> {
+    try {
+      this.logger.log(`🤖 Executando prompt personalizado com modelo: ${model}`);
+
+      // Determinar se é OpenAI ou Gemini
+      const isOpenAI = model.startsWith('gpt');
+      const isGemini = model.startsWith('gemini');
+
+      if (isOpenAI) {
+        // Usar OpenAI
+        const messages: any[] = [];
+        
+        if (systemMessage) {
+          messages.push({
+            role: 'system',
+            content: systemMessage
+          });
+        }
+        
+        messages.push({
+          role: 'user',
+          content: prompt
+        });
+
+        const completion = await this.openai.chat.completions.create({
+          model: model,
+          messages: messages,
+          temperature: temperature,
+          ...(maxTokens && { max_tokens: maxTokens })
+        });
+
+        const response = completion.choices[0]?.message?.content;
+        if (!response) {
+          throw new Error('Resposta vazia da OpenAI');
+        }
+
+        this.logger.log('✅ Prompt executado com sucesso (OpenAI)');
+        return response;
+
+      } else if (isGemini) {
+        // Usar Gemini
+        const fullPrompt = systemMessage 
+          ? `${systemMessage}\n\n${prompt}`
+          : prompt;
+
+        const geminiModel = this.gemini.getGenerativeModel({ 
+          model: model,
+          generationConfig: {
+            temperature: temperature,
+            ...(maxTokens && { maxOutputTokens: maxTokens })
+          }
+        });
+
+        const result = await geminiModel.generateContent(fullPrompt);
+        const response = result.response.text();
+
+        if (!response) {
+          throw new Error('Resposta vazia do Gemini');
+        }
+
+        this.logger.log('✅ Prompt executado com sucesso (Gemini)');
+        return response;
+
+      } else {
+        throw new Error(`Modelo não suportado: ${model}`);
+      }
+
+    } catch (error) {
+      this.logger.error(`❌ Erro ao executar prompt personalizado com modelo ${model}:`, error);
+      throw new Error(`Falha na execução do prompt: ${error.message}`);
     }
   }
 

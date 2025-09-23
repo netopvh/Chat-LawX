@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { PlansService } from '../plans/plans.service';
 import { StripeService } from '../stripe/stripe.service';
 import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
@@ -18,10 +19,40 @@ export class UpgradeSessionsService {
 
   constructor(
     private readonly supabaseService: SupabaseService,
+    private readonly prismaService: PrismaService,
     private readonly plansService: PlansService,
     private readonly stripeService: StripeService,
     private readonly jurisdictionService: JurisdictionService
   ) {}
+
+  private isBrazil(jurisdiction?: string): boolean {
+    return jurisdiction === 'BR';
+  }
+
+  private toSnakeCaseSession(prismaSession: any): UpgradeSession {
+    if (!prismaSession) return null as unknown as UpgradeSession;
+    return {
+      id: prismaSession.id,
+      user_id: prismaSession.userId,
+      phone: prismaSession.phone,
+      plan_name: prismaSession.planName,
+      billing_cycle: prismaSession.billingCycle,
+      amount: prismaSession.amount,
+      status: prismaSession.status,
+      current_step: prismaSession.currentStep,
+      attempts_count: prismaSession.attemptsCount,
+      last_attempt_at: prismaSession.lastAttemptAt ? prismaSession.lastAttemptAt.toISOString() : null,
+      jurisdiction: prismaSession.jurisdiction,
+      stripe_checkout_url: prismaSession.stripeCheckoutUrl,
+      stripe_checkout_session_id: prismaSession.stripeCheckoutSessionId,
+      completed_at: prismaSession.completedAt ? prismaSession.completedAt.toISOString() : undefined,
+      payment_confirmed_at: prismaSession.paymentConfirmedAt ? prismaSession.paymentConfirmedAt.toISOString() : undefined,
+      payment_failed_at: prismaSession.paymentFailedAt ? prismaSession.paymentFailedAt.toISOString() : undefined,
+      created_at: prismaSession.createdAt.toISOString(),
+      updated_at: prismaSession.updatedAt.toISOString(),
+      expires_at: prismaSession.expiresAt.toISOString(),
+    };
+  }
 
   async createSession(sessionData: CreateUpgradeSessionDto): Promise<UpgradeSession> {
     try {
@@ -30,41 +61,88 @@ export class UpgradeSessionsService {
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + 1); // Expira em 1 hora
 
-      const { data, error } = await this.supabaseService.getClient()
-        .from('upgrade_sessions')
-        .insert({
-          user_id: sessionData.user_id,
-          phone: sessionData.phone,
-          plan_name: sessionData.plan_name,
-          billing_cycle: sessionData.billing_cycle,
-          amount: sessionData.amount,
-          current_step: sessionData.current_step,
-          status: 'active',
-          attempts_count: 0,
-          expires_at: expiresAt.toISOString()
-        })
-        .select()
-        .single();
+      // Detectar jurisdição (se não vier informada, usar phone)
+      const jurisdiction = sessionData.jurisdiction || this.jurisdictionService.detectJurisdiction(sessionData.phone).jurisdiction;
 
-      if (error) {
-        this.logger.error('Erro ao criar sessão de upgrade:', error);
-        throw new Error(`Erro ao criar sessão: ${error.message}`);
+      if (this.isBrazil(jurisdiction)) {
+        const { data, error } = await this.supabaseService.getClient()
+          .from('upgrade_sessions')
+          .insert({
+            user_id: sessionData.user_id,
+            phone: sessionData.phone,
+            plan_name: sessionData.plan_name,
+            billing_cycle: sessionData.billing_cycle,
+            amount: sessionData.amount,
+            current_step: sessionData.current_step,
+            status: 'active',
+            attempts_count: 0,
+            expires_at: expiresAt.toISOString(),
+            jurisdiction
+          })
+          .select()
+          .single();
+
+        if (error) {
+          this.logger.error('Erro ao criar sessão de upgrade (Supabase):', error);
+          throw new Error(`Erro ao criar sessão: ${error.message}`);
+        }
+
+        this.logger.log(`Sessão de upgrade criada (Supabase): ${data.id}`);
+        return data;
       }
 
-      this.logger.log(`Sessão de upgrade criada: ${data.id}`);
-      return data;
+      // PT/ES via Prisma
+      const prismaSession = await (this.prismaService as any).upgradeSession.create({
+        data: {
+          userId: sessionData.user_id,
+          phone: sessionData.phone,
+          planName: sessionData.plan_name || '',
+          billingCycle: sessionData.billing_cycle,
+          amount: sessionData.amount,
+          currentStep: sessionData.current_step,
+          status: 'active',
+          attemptsCount: 0,
+          expiresAt,
+          jurisdiction,
+        }
+      });
+      this.logger.log(`Sessão de upgrade criada (Prisma): ${prismaSession.id}`);
+      return this.toSnakeCaseSession(prismaSession);
     } catch (error) {
       this.logger.error('Erro ao criar sessão de upgrade:', error);
       throw error;
     }
   }
 
-  async getActiveSession(userId: string): Promise<UpgradeSession | null> {
+  async getActiveSession(userId: string, jurisdiction?: string): Promise<UpgradeSession | null> {
     try {
       this.logger.log(`Buscando sessão ativa para usuário ${userId}`);
 
       const now = new Date().toISOString();
 
+      // 1) Tentar via Prisma (PT/ES)
+      const prismaActive = await (this.prismaService as any).upgradeSession.findFirst({
+        where: {
+          userId,
+          status: 'active',
+          expiresAt: { gt: new Date(now) }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      if (prismaActive) {
+        const session = this.toSnakeCaseSession(prismaActive);
+        this.logger.log(`Sessão ativa encontrada (Prisma): ${session.id}`);
+        return session;
+      }
+
+      // Se a jurisdição é explicitamente não-BR, não tentar Supabase
+      if (jurisdiction && !this.isBrazil(jurisdiction)) {
+        this.logger.log(`Nenhuma sessão ativa (Prisma) para jurisdição ${jurisdiction}`);
+        return null;
+      }
+
+      // 2) Fallback Supabase (BR)
       const { data, error } = await this.supabaseService.getClient()
         .from('upgrade_sessions')
         .select('*')
@@ -77,15 +155,14 @@ export class UpgradeSessionsService {
 
       if (error) {
         if (error.code === 'PGRST116') {
-          // Nenhuma sessão encontrada
           this.logger.log(`Nenhuma sessão ativa encontrada para usuário ${userId}`);
           return null;
         }
-        this.logger.error('Erro ao buscar sessão ativa:', error);
+        this.logger.error('Erro ao buscar sessão ativa (Supabase):', error);
         throw new Error(`Erro ao buscar sessão: ${error.message}`);
       }
 
-      this.logger.log(`Sessão ativa encontrada: ${data.id}`);
+      this.logger.log(`Sessão ativa encontrada (Supabase): ${data.id}`);
       return data;
     } catch (error) {
       this.logger.error('Erro ao buscar sessão ativa:', error);
@@ -102,6 +179,30 @@ export class UpgradeSessionsService {
         updated_at: new Date().toISOString()
       };
 
+      // Tentar atualizar no Prisma primeiro
+      const prismaExisting = await (this.prismaService as any).upgradeSession.findUnique({ where: { id: sessionId } });
+      if (prismaExisting) {
+        const prismaUpdate: any = {};
+        if (updateData.status) prismaUpdate.status = updateData.status;
+        if (updateData.current_step) prismaUpdate.currentStep = updateData.current_step;
+        if (typeof updateData.attempts_count === 'number') prismaUpdate.attemptsCount = updateData.attempts_count;
+        if (updateData.last_attempt_at) prismaUpdate.lastAttemptAt = new Date(updateData.last_attempt_at);
+        if (updateData.plan_name !== undefined) prismaUpdate.planName = updateData.plan_name;
+        if (updateData.billing_cycle) prismaUpdate.billingCycle = updateData.billing_cycle;
+        if (typeof updateData.amount === 'number') prismaUpdate.amount = updateData.amount;
+        if (updateData.jurisdiction) prismaUpdate.jurisdiction = updateData.jurisdiction;
+        if (updateData.stripe_checkout_url) prismaUpdate.stripeCheckoutUrl = updateData.stripe_checkout_url;
+        if (updateData.stripe_checkout_session_id) prismaUpdate.stripeCheckoutSessionId = updateData.stripe_checkout_session_id;
+        if (updateData.completed_at) prismaUpdate.completedAt = new Date(updateData.completed_at);
+        if (updateData.payment_confirmed_at) prismaUpdate.paymentConfirmedAt = new Date(updateData.payment_confirmed_at);
+        if (updateData.payment_failed_at) prismaUpdate.paymentFailedAt = new Date(updateData.payment_failed_at);
+
+        const updated = await (this.prismaService as any).upgradeSession.update({ where: { id: sessionId }, data: prismaUpdate });
+        this.logger.log(`Sessão atualizada (Prisma): ${sessionId}`);
+        return this.toSnakeCaseSession(updated);
+      }
+
+      // Fallback Supabase
       const { data, error } = await this.supabaseService.getClient()
         .from('upgrade_sessions')
         .update(updatePayload)
@@ -110,11 +211,11 @@ export class UpgradeSessionsService {
         .single();
 
       if (error) {
-        this.logger.error('Erro ao atualizar sessão:', error);
+        this.logger.error('Erro ao atualizar sessão (Supabase):', error);
         throw new Error(`Erro ao atualizar sessão: ${error.message}`);
       }
 
-      this.logger.log(`Sessão atualizada: ${sessionId}`);
+      this.logger.log(`Sessão atualizada (Supabase): ${sessionId}`);
       return data;
     } catch (error) {
       this.logger.error('Erro ao atualizar sessão:', error);
@@ -135,8 +236,21 @@ export class UpgradeSessionsService {
   async incrementAttempts(sessionId: string): Promise<void> {
     try {
       this.logger.log(`Incrementando tentativas para sessão ${sessionId}`);
+      // Tentar Prisma
+      const prismaExisting = await (this.prismaService as any).upgradeSession.findUnique({ where: { id: sessionId } });
+      if (prismaExisting) {
+        const updated = await (this.prismaService as any).upgradeSession.update({
+          where: { id: sessionId },
+          data: {
+            attemptsCount: (prismaExisting.attemptsCount || 0) + 1,
+            lastAttemptAt: new Date(),
+          }
+        });
+        this.logger.log(`Tentativas incrementadas (Prisma) para sessão ${sessionId}: ${updated.attemptsCount}`);
+        return;
+      }
 
-      // Primeiro, buscar a sessão atual
+      // Fallback Supabase
       const { data: currentSession, error: fetchError } = await this.supabaseService.getClient()
         .from('upgrade_sessions')
         .select('attempts_count')
@@ -144,18 +258,17 @@ export class UpgradeSessionsService {
         .single();
 
       if (fetchError) {
-        this.logger.error('Erro ao buscar sessão para incrementar tentativas:', fetchError);
+        this.logger.error('Erro ao buscar sessão para incrementar tentativas (Supabase):', fetchError);
         return;
       }
 
       const newAttemptsCount = (currentSession.attempts_count || 0) + 1;
-
       await this.updateSession(sessionId, {
         attempts_count: newAttemptsCount,
         last_attempt_at: new Date().toISOString()
       });
 
-      this.logger.log(`Tentativas incrementadas para sessão ${sessionId}: ${newAttemptsCount}`);
+      this.logger.log(`Tentativas incrementadas (Supabase) para sessão ${sessionId}: ${newAttemptsCount}`);
     } catch (error) {
       this.logger.error('Erro ao incrementar tentativas:', error);
     }
@@ -203,7 +316,12 @@ export class UpgradeSessionsService {
       this.logger.log('Limpando sessões expiradas...');
 
       const now = new Date().toISOString();
-
+      // Prisma
+      await (this.prismaService as any).upgradeSession.updateMany({
+        where: { status: 'active', expiresAt: { lt: new Date(now) } },
+        data: { status: 'expired', updatedAt: new Date() }
+      });
+      // Supabase
       const { error } = await this.supabaseService.getClient()
         .from('upgrade_sessions')
         .update({ 
@@ -214,10 +332,9 @@ export class UpgradeSessionsService {
         .lt('expires_at', now);
 
       if (error) {
-        this.logger.error('Erro ao limpar sessões expiradas:', error);
-      } else {
-        this.logger.log('Sessões expiradas limpas com sucesso');
+        this.logger.error('Erro ao limpar sessões expiradas (Supabase):', error);
       }
+      this.logger.log('Sessões expiradas limpas com sucesso');
     } catch (error) {
       this.logger.error('Erro ao limpar sessões expiradas:', error);
     }
@@ -226,7 +343,30 @@ export class UpgradeSessionsService {
   async createAttempt(attemptData: CreateUpgradeAttemptDto): Promise<UpgradeAttempt> {
     try {
       this.logger.log(`Criando tentativa para sessão ${attemptData.session_id}`);
+      // Tentar Prisma primeiro (PT/ES)
+      try {
+        const created = await (this.prismaService as any).upgradeAttempt.create({
+          data: {
+            sessionId: attemptData.session_id,
+            step: attemptData.step,
+            success: attemptData.success,
+            errorMessage: attemptData.error_message,
+          }
+        });
+        this.logger.log(`Tentativa criada (Prisma): ${created.id}`);
+        return {
+          id: created.id,
+          session_id: created.sessionId,
+          step: created.step,
+          success: created.success,
+          error_message: created.errorMessage,
+          created_at: created.createdAt.toISOString(),
+        };
+      } catch (e) {
+        this.logger.warn('Falha ao criar tentativa via Prisma, tentando Supabase...', e);
+      }
 
+      // Fallback Supabase
       const { data, error } = await this.supabaseService.getClient()
         .from('upgrade_attempts')
         .insert(attemptData)
@@ -234,11 +374,11 @@ export class UpgradeSessionsService {
         .single();
 
       if (error) {
-        this.logger.error('Erro ao criar tentativa:', error);
+        this.logger.error('Erro ao criar tentativa (Supabase):', error);
         throw new Error(`Erro ao criar tentativa: ${error.message}`);
       }
 
-      this.logger.log(`Tentativa criada: ${data.id}`);
+      this.logger.log(`Tentativa criada (Supabase): ${data.id}`);
       return data;
     } catch (error) {
       this.logger.error('Erro ao criar tentativa:', error);

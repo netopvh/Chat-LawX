@@ -374,6 +374,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     }
   }
 
+
   async incrementUserMessageCount(userId: string): Promise<void> {
     try {
       // Buscar assinatura ativa do usuário
@@ -408,4 +409,5 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       this.logger.error(`❌ Erro ao incrementar contador de mensagens para usuário ${userId}:`, error);
     }
   }
+
 }

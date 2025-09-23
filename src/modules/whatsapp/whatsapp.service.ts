@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { UsersService, User } from '../users/users.service';
@@ -14,6 +14,15 @@ import { TeamsService } from '../teams/teams.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import { WebhookDto } from './dto/webhook.dto';
+import { WhatsAppClient } from './services/clients/whatsapp.client';
+import { AIGateway } from './services/clients/ai.gateway';
+import { JurisdictionRouter } from './app/jurisdiction.router';
+import { CONVERSATION_STATE_STORE, IConversationStateStore } from './interfaces/conversation-state-store.interface';
+import { MediaDownloader } from './services/media/media-downloader';
+import { AudioProcessor } from './services/media/audio-processor';
+import { DocumentProcessor } from './services/media/document-processor';
+import { SessionService } from './services/session/session.service';
+import { UpgradeFlowEngine } from './services/upgrade/upgrade-flow.engine';
 
 interface ConversationState {
   isWaitingForName: boolean;
@@ -39,7 +48,22 @@ interface ConversationState {
 @Injectable()
 export class WhatsAppService {
   private readonly logger = new Logger(WhatsAppService.name);
-  private conversationStates = new Map<string, ConversationState>();
+  
+  private createDefaultState(): ConversationState {
+    return {
+      isWaitingForName: false,
+      isWaitingForEmail: false,
+      isWaitingForConfirmation: false,
+      isWaitingForBrazilianName: false,
+      isWaitingForWhatsAppName: false,
+      isInUpgradeFlow: false,
+      isInRegistrationFlow: false,
+      registrationStep: 'introduction',
+      upgradeStep: 'introduction',
+      isInAnalysis: false,
+      analysisStartTime: undefined,
+    };
+  }
 
   // Array de números brasileiros para teste no fluxo ES
   private readonly testNumbersForESFlow = [
@@ -62,6 +86,15 @@ export class WhatsAppService {
     private teamsService: TeamsService,
     private prismaService: PrismaService,
     private supabaseService: SupabaseService,
+    private whatsappClient: WhatsAppClient,
+    private aiGateway: AIGateway,
+    private jurisdictionRouter: JurisdictionRouter,
+    @Inject(CONVERSATION_STATE_STORE) private stateStore: IConversationStateStore<ConversationState>,
+    private mediaDownloader: MediaDownloader,
+    private audioProcessor: AudioProcessor,
+    private documentProcessor: DocumentProcessor,
+    private sessionService: SessionService,
+    private upgradeFlowEngine: UpgradeFlowEngine,
   ) {}
 
   // Métodos auxiliares para buscar planos dinamicamente
@@ -74,9 +107,9 @@ export class WhatsAppService {
     }
   }
 
-  private async getUpgradePlans() {
+  private async getUpgradePlans(jurisdiction?: string) {
     try {
-      return await this.plansService.getUpgradePlans();
+      return await this.plansService.getUpgradePlans(jurisdiction);
     } catch (error) {
       this.logger.error('Erro ao buscar planos de upgrade:', error);
       throw error;
@@ -102,21 +135,36 @@ export class WhatsAppService {
     }
   }
 
+  private resolveUpgradeJurisdiction(phone: string, existingSession?: any): string {
+    if (existingSession?.jurisdiction) return existingSession.jurisdiction;
+    const state = this.getConversationState(phone);
+    if (state?.jurisdiction) return state.jurisdiction;
+    return this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+  }
+
   private async getPlanLimits(planName: string, jurisdiction: string): Promise<string> {
     try {
       const plan = await this.plansService.getPlanByName(planName);
-      
+
+      const isES = jurisdiction === 'ES';
+
       if (plan.is_unlimited) {
-        return '• Consultas jurídicas ilimitadas\n• Análise de documentos ilimitada\n• Mensagens ilimitadas';
+        return isES
+          ? '• Consultas jurídicas ilimitadas\n• Análisis de documentos ilimitado\n• Mensajes ilimitados'
+          : '• Consultas jurídicas ilimitadas\n• Análise de documentos ilimitada\n• Mensagens ilimitadas';
       } else {
         const limitControlType = this.jurisdictionService.getLimitControlType(jurisdiction);
-        
+
         if (limitControlType === 'teams') {
-          // Para Brasil - limites controlados via Supabase teams
-          return `• Consultas jurídicas controladas via sistema\n• Análise de documentos controlada via sistema\n• Mensagens controladas via sistema`;
+          // Brasil (ou quando controle for por sistema)
+          return isES
+            ? '• Consultas jurídicas controladas por el sistema\n• Análisis de documentos controlado por el sistema\n• Mensajes controlados por el sistema'
+            : '• Consultas jurídicas controladas via sistema\n• Análise de documentos controlada via sistema\n• Mensagens controladas via sistema';
         } else {
-          // Para Portugal/Espanha - limites locais
-          return `• ${plan.consultation_limit} consultas por mês\n• Análise de documentos incluída\n• Mensagens ilimitadas`;
+          // PT/ES - limites locais (exibição simples)
+          return isES
+            ? `• ${plan.consultation_limit ?? 0} consultas al mes\n• Análisis de documentos incluido\n• Mensajes ilimitados`
+            : `• ${plan.consultation_limit ?? 0} consultas por mês\n• Análise de documentos incluída\n• Mensagens ilimitadas`;
         }
       }
     } catch (error) {
@@ -125,7 +173,7 @@ export class WhatsAppService {
     }
   }
 
-  private async detectPlanFromMessage(userMessage: string): Promise<string | null> {
+  private async detectPlanFromMessage(userMessage: string, jurisdiction?: string): Promise<string | null> {
     try {
       this.logger.log('📋 Detectando plano da mensagem com IA:', userMessage);
       
@@ -138,7 +186,7 @@ export class WhatsAppService {
       }
       
       // Fallback para detecção manual
-      const plans = await this.getUpgradePlans();
+      const plans = await this.getUpgradePlans(jurisdiction);
       const lowerMessage = userMessage.toLowerCase();
       
       const selectedPlan = plans.find(plan => 
@@ -243,57 +291,10 @@ export class WhatsAppService {
     timeSinceLastMessage: number;
   }> {
     try {
-      // Remove o DDI (55) e caracteres não numéricos
-      const cleanPhone = phone.replace(/\D/g, '');
-      const phoneWithoutDDI = cleanPhone.startsWith('55') ? cleanPhone.substring(2) : cleanPhone;
-      
-      this.logger.log(`🔍 Verificando sessão brasileira para: ${phoneWithoutDDI}`);
-      
-      // Buscar na tabela atendimento_wpps
-      const { data, error } = await this.supabaseService
-        .getClient()
-        .from('atendimento_wpps')
-        .select('*')
-        .eq('number', phoneWithoutDDI)
-        .single();
-
-      if (error) {
-        if (error.code === 'PGRST116') {
-          this.logger.log(`👤 Sessão não encontrada para: ${phoneWithoutDDI}`);
-          return {
-            session: null,
-            needsWelcomeBack: false,
-            timeSinceLastMessage: 0
-          };
-        }
-        throw error;
-      }
-
-      this.logger.log(`✅ Sessão encontrada: ${data.id} - ${data.name}`);
-      
-      // Verificar se precisa de mensagem de boas-vindas (mais de 1 hora)
-      const ONE_HOUR_MS = 60 * 60 * 1000; // 1 hora em milissegundos
-      const lastMessageTime = data.last_message_sent ? new Date(data.last_message_sent).getTime() : 0;
-      const currentTime = Date.now();
-      const timeSinceLastMessage = currentTime - lastMessageTime;
-      const needsWelcomeBack = timeSinceLastMessage > ONE_HOUR_MS;
-      
-      if (needsWelcomeBack) {
-        this.logger.log(`⏰ Usuário ${data.name} precisa de mensagem de boas-vindas (última mensagem há ${Math.round(timeSinceLastMessage / (60 * 1000))} minutos)`);
-      }
-      
-      return {
-        session: data,
-        needsWelcomeBack,
-        timeSinceLastMessage
-      };
+      return await this.sessionService.checkBrazilianUserSession(phone);
     } catch (error) {
       this.logger.error(`❌ Erro ao verificar sessão brasileira ${phone}:`, error);
-      return {
-        session: null,
-        needsWelcomeBack: false,
-        timeSinceLastMessage: 0
-      };
+      return { session: null, needsWelcomeBack: false, timeSinceLastMessage: 0 };
     }
   }
 
@@ -313,22 +314,7 @@ export class WhatsAppService {
 
   private async updateLastMessageSent(phone: string): Promise<void> {
     try {
-      // Remove o DDI (55) e caracteres não numéricos
-      const cleanPhone = phone.replace(/\D/g, '');
-      const phoneWithoutDDI = cleanPhone.startsWith('55') ? cleanPhone.substring(2) : cleanPhone;
-      
-      // Atualizar campo last_message_sent na tabela atendimento_wpps
-      const { error } = await this.supabaseService
-        .getClient()
-        .from('atendimento_wpps')
-        .update({ last_message_sent: new Date().toISOString() })
-        .eq('number', phoneWithoutDDI);
-
-      if (error) {
-        throw error;
-      }
-
-      this.logger.log(`✅ Campo last_message_sent atualizado para ${phoneWithoutDDI}`);
+      await this.sessionService.updateBrazilLastMessageSent(phone);
     } catch (error) {
       this.logger.error(`❌ Erro ao atualizar last_message_sent para ${phone}:`, error);
     }
@@ -346,42 +332,10 @@ export class WhatsAppService {
     timeSinceLastMessage: number;
   }> {
     try {
-      // Remove caracteres não numéricos
-      const cleanPhone = phone.replace(/\D/g, '');
-      
-      this.logger.log(`🔍 Verificando sessão WhatsApp para: ${cleanPhone} (${jurisdiction})`);
-      
-      // Buscar na tabela whatsapp_sessions
-      const session = await this.prismaService.findWhatsAppSessionByPhone(cleanPhone);
-
-      if (!session) {
-        this.logger.log(`❌ Nenhuma sessão encontrada para ${cleanPhone}`);
-        return {
-          session: null,
-          needsWelcomeBack: false,
-          timeSinceLastMessage: 0
-        };
-      }
-
-      // Calcular tempo desde última mensagem
-      const timeSinceLastMessage = Date.now() - session.lastMessageSent.getTime();
-      const oneHourInMs = 60 * 60 * 1000; // 1 hora em milissegundos
-      const needsWelcomeBack = timeSinceLastMessage > oneHourInMs;
-
-      this.logger.log(`✅ Sessão encontrada: ${session.name}, última mensagem: ${timeSinceLastMessage}ms atrás`);
-
-      return {
-        session,
-        needsWelcomeBack,
-        timeSinceLastMessage
-      };
+      return await this.sessionService.checkWhatsAppSession(phone, jurisdiction);
     } catch (error) {
       this.logger.error(`❌ Erro ao verificar sessão WhatsApp para ${phone}:`, error);
-      return {
-        session: null,
-        needsWelcomeBack: false,
-        timeSinceLastMessage: 0
-      };
+      return { session: null, needsWelcomeBack: false, timeSinceLastMessage: 0 };
     }
   }
 
@@ -391,84 +345,8 @@ export class WhatsAppService {
    */
   private async createWhatsAppSession(phone: string, name: string, jurisdiction: string): Promise<any> {
     try {
-      // Remove caracteres não numéricos
-      const cleanPhone = phone.replace(/\D/g, '');
-      
-      this.logger.log(`📝 Criando sessão WhatsApp: ${name} - ${cleanPhone} (${jurisdiction})`);
-      
-      // Determinar DDI baseado na jurisdição
-      const ddi = jurisdiction === 'ES' ? '34' : '351';
-      
-      // ✅ PRIMEIRO: Verificar se o usuário existe na tabela users
-      const existingUser = await this.prismaService.findUserByPhone(cleanPhone);
-      
-      let user;
-      if (!existingUser) {
-        this.logger.log(`👤 Usuário não encontrado, criando novo usuário: ${cleanPhone}`);
-        
-        // Criar usuário na tabela users primeiro
-        user = await this.prismaService.user.create({
-          data: {
-            phone: cleanPhone,
-            ddi: ddi,
-            jurisdiction: jurisdiction,
-            name: name,
-            isRegistered: true,
-          }
-        });
-        
-        this.logger.log(`✅ Usuário criado com sucesso: ${user.id}`);
-        
-        // 🎁 CRIAR ASSINATURA FREMIUM AUTOMATICAMENTE
-        try {
-          await this.prismaService.createFremiumSubscription(user.id, jurisdiction);
-          this.logger.log(`🎁 Assinatura Fremium criada automaticamente para usuário: ${user.id}`);
-        } catch (subscriptionError) {
-          this.logger.error(`❌ Erro ao criar assinatura Fremium:`, subscriptionError);
-          // Não falhar o processo por causa da assinatura, apenas logar o erro
-        }
-      } else {
-        this.logger.log(`✅ Usuário encontrado: ${existingUser.id}`);
-        
-        // ✅ NOVO: Atualizar nome do usuário existente se necessário
-        if (existingUser.name !== name) {
-          await this.prismaService.user.update({
-            where: { id: existingUser.id },
-            data: { name: name }
-          });
-          this.logger.log(`✅ Nome do usuário atualizado: ${name}`);
-        }
-        
-        // ✅ NOVO: Verificar se usuário tem assinatura ativa, se não tiver, criar Fremium
-        try {
-          const activeSubscription = await this.prismaService.findUserSubscription(existingUser.id);
-          
-          if (!activeSubscription) {
-            this.logger.log(`🎁 Usuário existente sem assinatura ativa, criando Fremium: ${existingUser.id}`);
-            await this.prismaService.createFremiumSubscription(existingUser.id, jurisdiction);
-            this.logger.log(`🎁 Assinatura Fremium criada para usuário existente: ${existingUser.id}`);
-          } else {
-            this.logger.log(`✅ Usuário já possui assinatura ativa: ${activeSubscription.id}`);
-          }
-        } catch (subscriptionError) {
-          this.logger.error(`❌ Erro ao verificar/criar assinatura para usuário existente:`, subscriptionError);
-          // Não falhar o processo por causa da assinatura, apenas logar o erro
-        }
-        
-        user = existingUser;
-      }
-      
-      // Inserir na tabela whatsapp_sessions
-      const session = await this.prismaService.createWhatsAppSession({
-        phone: cleanPhone,
-        name: name,
-        jurisdiction: jurisdiction,
-        ddi: ddi
-      });
-
-      // Atualizar usuário com referência à sessão
-      await this.prismaService.updateUserLastWhatsAppInteraction(cleanPhone);
-
+      this.logger.log(`📝 Criando sessão WhatsApp: ${name} - ${phone} (${jurisdiction})`);
+      const session = await this.sessionService.createWhatsAppSession(phone, name, jurisdiction);
       this.logger.log(`✅ Sessão WhatsApp criada com sucesso: ${session.id}`);
       return session;
     } catch (error) {
@@ -483,19 +361,8 @@ export class WhatsAppService {
    */
   private async updateWhatsAppLastMessageSent(phone: string, jurisdiction: string): Promise<void> {
     try {
-      // Remove caracteres não numéricos
-      const cleanPhone = phone.replace(/\D/g, '');
-      
-      // Atualizar campo lastMessageSent na tabela whatsapp_sessions
-      await this.prismaService.updateWhatsAppSession(cleanPhone, {
-        lastMessageSent: new Date(),
-        isActive: true
-      });
-
-      // Atualizar também no User
-      await this.prismaService.updateUserLastWhatsAppInteraction(cleanPhone);
-
-      this.logger.log(`✅ Campo lastMessageSent atualizado para ${cleanPhone}`);
+      await this.sessionService.updateWhatsAppLastMessageSent(phone);
+      this.logger.log(`✅ Campo lastMessageSent atualizado para ${phone}`);
     } catch (error) {
       this.logger.error(`❌ Erro ao atualizar lastMessageSent para ${phone}:`, error);
     }
@@ -512,8 +379,15 @@ export class WhatsAppService {
     jurisdiction: any
   ): Promise<void> {
     try {
+      // Proteção contra duplicidade: se outro caminho já marcou o estado para coletar nome,
+      // evitar reenviar a mesma dupla de mensagens no mesmo ciclo de processamento.
+      const freshState = this.getConversationState(phone);
+      if (freshState.isWaitingForWhatsAppName && !state.isWaitingForWhatsAppName) {
+        return;
+      }
+
       // Se já está no fluxo de coleta de nome
-      if (state.isWaitingForWhatsAppName) {
+      if (freshState.isWaitingForWhatsAppName) {
         // Usuário já enviou o nome
         if (text.length < 2) {
           const response = jurisdiction.jurisdiction === 'ES' 
@@ -551,7 +425,7 @@ Sou teu assistente jurídico especializado
 [Emoji] [Funcionalidades disponíveis]
 Fazer uma pergunta formal desejando o que deseja fazer hoje.`;
 
-        const welcomeMsg = await this.aiService.executeCustomPrompt(
+        const welcomeMsg = await this.aiGateway.executeCustomPrompt(
           welcomePrompt,
           'gpt-3.5-turbo',
           'Você é um especialista em criar mensagens de boas-vindas personalizadas para assistentes jurídicos. Seja profissional e útil.',
@@ -589,7 +463,7 @@ Exemplo de estrutura:
 [Emoji] Sou teu assistente jurídico especializado em [jurisdição].
 [Emoji] [Mensagem de boas-vindas]`;
 
-      const welcomeMsg = await this.aiService.executeCustomPrompt(
+      const welcomeMsg = await this.aiGateway.executeCustomPrompt(
         welcomePrompt,
         'gpt-3.5-turbo',
         'Você é um especialista em criar mensagens de boas-vindas para assistentes jurídicos. Seja conciso e profissional.',
@@ -613,7 +487,7 @@ Exemplo de estrutura:
       
       // Atualizar estado da conversa
       this.setConversationState(phone, {
-        ...state,
+        ...freshState,
         isWaitingForWhatsAppName: true
       });
       
@@ -652,27 +526,8 @@ Exemplo de estrutura:
 
   private async createBrazilianUserSession(phone: string, name: string): Promise<any> {
     try {
-      // Remove o DDI (55) e caracteres não numéricos
-      const cleanPhone = phone.replace(/\D/g, '');
-      const phoneWithoutDDI = cleanPhone.startsWith('55') ? cleanPhone.substring(2) : cleanPhone;
-      
-      this.logger.log(`📝 Criando sessão brasileira: ${name} - ${phoneWithoutDDI}`);
-      
-      // Inserir na tabela atendimento_wpps
-      const { data, error } = await this.supabaseService
-        .getClient()
-        .from('atendimento_wpps')
-        .insert({
-          name: name,
-          number: phoneWithoutDDI
-        })
-        .select()
-        .single();
-
-      if (error) {
-        throw error;
-      }
-
+      this.logger.log(`📝 Criando sessão brasileira: ${name} - ${phone}`);
+      const data = await this.sessionService.createBrazilianUserSession(phone, name);
       this.logger.log(`✅ Sessão criada com sucesso: ${data.id}`);
       return data;
     } catch (error) {
@@ -763,21 +618,28 @@ Exemplo de estrutura:
       const state = this.getConversationState(phone);
       this.logger.log('💬 Estado da conversa:', JSON.stringify(state, null, 2));
 
-      // Roteamento por jurisdição
-      switch (jurisdiction.jurisdiction) {
-        case 'BR':
-          await this.processBrazilianMessage(message, phone, text, state, jurisdiction);
-          break;
-        case 'PT':
-          await this.processPortugueseMessage(message, phone, text, state, jurisdiction);
-          break;
-        case 'ES':
-          await this.processSpanishMessage(message, phone, text, state, jurisdiction);
-          break;
-        default:
-          this.logger.warn(`Jurisdição não suportada: ${jurisdiction.jurisdiction}`);
-          await this.sendMessage(phone, 'Desculpe, sua jurisdição não é suportada no momento.');
-      }
+      // Persistir jurisdição detectada/forçada no estado da conversa
+      // para que etapas subsequentes (ex.: seleção de plano/frequência)
+      // não recaiam para BR ao redetectar pelo número brasileiro de teste
+      this.setConversationState(phone, {
+        jurisdiction: jurisdiction.jurisdiction,
+        ddi: jurisdiction.ddi,
+      });
+
+      // Roteamento por jurisdição usando Strategy
+      const handler = this.jurisdictionRouter.resolve(jurisdiction.jurisdiction);
+      await handler.process(
+        message,
+        phone,
+        text,
+        state,
+        jurisdiction,
+        {
+          processBrazilianMessage: (m, p, t, s, j) => this.processBrazilianMessage(m, p, t, s, j),
+          processPortugueseMessage: (m, p, t, s, j) => this.processPortugueseMessage(m, p, t, s, j),
+          processSpanishMessage: (m, p, t, s, j) => this.processSpanishMessage(m, p, t, s, j),
+        }
+      );
     } catch (error) {
       this.logger.error('Erro ao processar mensagem:', error);
     }
@@ -1091,6 +953,15 @@ Exemplo de estrutura:
     try {
       this.logger.log('📸 Processando mensagem de imagem jurídica...');
       
+      // Validar limites para documentos
+      if (user?.id) {
+        const usageCheck = await this.usageService.checkLimits(user.id, 'document_analysis', phone);
+        if (!usageCheck.allowed) {
+          await this.handleLimitReachedMessage(phone, user, usageCheck.message, undefined);
+          return;
+        }
+      }
+      
       // Download da imagem
       const imageBuffer = await this.downloadImage(message);
       if (!imageBuffer) {
@@ -1122,6 +993,11 @@ Exemplo de estrutura:
         `⚠️ *Esta análise é informativa. Para casos específicos, consulte um advogado.*`;
       
       await this.sendMessage(phone, response);
+
+      // Incrementar contador de análises de documentos
+      if (user?.id) {
+        await this.usageService.incrementUsage(user.id, 'document_analysis', phone);
+      }
       
     } catch (error) {
       this.logger.error('Erro ao processar imagem jurídica:', error);
@@ -1139,20 +1015,53 @@ Exemplo de estrutura:
         return;
       }
 
-      // 1. Verificar se há sessão de upgrade ativa ou estado de upgrade
-      if (user) {
-        const activeSession = await this.upgradeSessionsService.getActiveSession(user.id);
+      // 0.1 Jurisdição detectada
+      const jurisdictionInfo = forcedJurisdiction ? { jurisdiction: forcedJurisdiction } : this.jurisdictionService.detectJurisdiction(phone);
+      const isBrazil = jurisdictionInfo.jurisdiction === 'BR';
+
+      // 0.2 BR: Se a mensagem indicar upgrade/assinatura, responder com link estático e NÃO iniciar fluxo
+      if (isBrazil) {
+        const lower = text.toLowerCase();
+        const upgradeKeywordsBR = [
+          'upgrade', 'assinar', 'assinatura', 'plano', 'pago', 'premium', 'pro', 'mensal', 'anual',
+          'trocar plano', 'mudar plano', 'quero plano', 'quero assinar', 'quero o pro', 'quero o premium',
+          'comprar', 'preço', 'pagamento'
+        ];
+        if (upgradeKeywordsBR.some(k => lower.includes(k))) {
+          const response = '🚀 Para fazer upgrade do seu plano, acesse: https://plataforma.lawx.ai/\n\n' +
+            'Lá você encontrará os planos disponíveis e poderá concluir o upgrade com segurança.';
+          await this.sendMessage(phone, response);
+          return;
+        }
+      }
+
+      // 1. Verificar se há sessão de upgrade ativa ou estado de upgrade (apenas PT/ES)
+      if (user && !isBrazil) {
+        const activeSession = await this.upgradeSessionsService.getActiveSession(user.id, jurisdictionInfo.jurisdiction);
         if (activeSession || state.isInUpgradeFlow) {
-          this.logger.log('🔄 Sessão de upgrade ativa, processando com IA...');
-          await this.processUpgradeFlowWithAI(phone, user.id, text, activeSession, state);
+          this.logger.log('🔄 Sessão de upgrade ativa, processando com Engine...');
+          await this.upgradeFlowEngine.route(
+            phone,
+            user.id,
+            text,
+            activeSession,
+            state,
+            {
+              handlePaymentConfirmation: (p, u, ctx) => this.handlePaymentConfirmation(p, u, ctx),
+              handleFrequencySelectionWithAI: (p, u, m, ctx) => this.handleFrequencySelectionWithAI(p, u, m, ctx),
+              handlePlanSelectionWithAI: (p, u, m, ctx) => this.handlePlanSelectionWithAI(p, u, m, ctx),
+              handleCancelUpgrade: (p, u, s) => this.handleCancelUpgrade(p, u, s),
+              handleContinueUpgrade: (p, u, m, ctx) => this.handleContinueUpgrade(p, u, m, ctx),
+            }
+          );
           return;
         }
 
-        // 2. Verificar se é uma nova intenção de upgrade
-        const upgradeIntent = await this.detectUpgradeIntent(text, user.id);
-        if (upgradeIntent.isUpgradeIntent) {
+        // 2. Verificar se é uma nova intenção de upgrade (apenas PT/ES)
+        const upgradeIntent = await this.detectUpgradeIntent(text, user.id, jurisdictionInfo.jurisdiction);
+        if (upgradeIntent.isUpgradeIntent && !isBrazil) {
           this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
-          await this.handleUpgradeFlow(phone, user.id, text);
+          await this.handleUpgradeFlow(phone, user.id, text, jurisdictionInfo.jurisdiction);
           return;
         }
       }
@@ -1190,11 +1099,12 @@ Exemplo de estrutura:
         }
       }
 
-      // Upload do áudio para Supabase Storage
-      const audioUrl = await this.uploadService.uploadAudioFile(audioBuffer, 'audio.mp3');
+      // Normalizar/converter áudio e upload
+      const normalizedBuffer = await this.audioProcessor.convertToMp3WithFallback(audioBuffer);
+      const audioUrl = await this.audioProcessor.uploadAudio(normalizedBuffer, 'audio.mp3');
       
       // Processar áudio para consulta jurídica
-      const transcribedText = await this.aiService.processAudioForLegalConsultation(audioBuffer);
+      const transcribedText = await this.audioProcessor.transcribe(normalizedBuffer);
       
       // Usar jurisdição forçada se fornecida, senão detectar
       const jurisdiction = forcedJurisdiction 
@@ -1250,7 +1160,6 @@ Exemplo de estrutura:
       // ✅ NOVO: Verificar limite de análise de documentos ANTES de processar
       if (user?.id) {
         const usageCheck = await this.usageService.checkLimits(user.id, 'document_analysis', phone);
-        
         if (!usageCheck.allowed) {
           this.logger.warn(`🚫 Limite de análise de documentos atingido para usuário ${user.id}`);
           await this.handleLimitReachedMessage(phone, user, usageCheck.message, forcedJurisdiction);
@@ -1276,7 +1185,7 @@ Exemplo de estrutura:
       }
 
       // Converter base64 para buffer
-      const documentBuffer = await this.convertBase64ToFile(base64Data, 'unknown');
+      const documentBuffer = this.documentProcessor.convertBase64ToBuffer(base64Data);
 
       // Verificar tamanho do arquivo (limite 20MB)
       const fileSizeMB = documentBuffer.length / (1024 * 1024);
@@ -1287,8 +1196,8 @@ Exemplo de estrutura:
       }
 
       // Detectar tipo de documento
-      const mimeType = this.detectDocumentType(documentBuffer);
-      if (!this.isSupportedDocumentType(mimeType)) {
+      const mimeType = this.documentProcessor.detectDocumentMime(documentBuffer);
+      if (!this.documentProcessor.isSupportedDocumentType(mimeType)) {
         const errorMsg = this.getLocalizedErrorMessage('unsupported_file_type', forcedJurisdiction);
         await this.sendMessage(phone, errorMsg);
         return;
@@ -1298,16 +1207,16 @@ Exemplo de estrutura:
       await this.sendMessageWithTyping(phone, analyzingMsg, 2000);
 
       // Gerar nome do arquivo
-      const fileName = this.generateDocumentFileName(mimeType);
+      const fileName = this.documentProcessor.generateFileName(mimeType);
 
       // Upload para Supabase Storage
-      const fileUrl = await this.uploadService.uploadDocumentFile(documentBuffer, fileName);
+      const fileUrl = await this.documentProcessor.upload(documentBuffer, fileName);
 
       // ✅ NOVO: Enviar para endpoint de análise com jurisdição
-      const analysis = await this.analyzeDocumentWithExternalAPI(fileUrl, forcedJurisdiction);
+      const analysis = await this.documentProcessor.analyzeDocumentWithExternalAPI(fileUrl, forcedJurisdiction);
 
       // ✅ NOVO: Formatar análise com localização por jurisdição
-      const formattedAnalysis = this.formatDocumentAnalysisForUser(analysis, forcedJurisdiction);
+      const formattedAnalysis = this.documentProcessor.formatDocumentAnalysisForUser(analysis, forcedJurisdiction);
 
       // Enviar resposta para usuário
       await this.sendMessageWithTyping(phone, formattedAnalysis, 1500);
@@ -1410,9 +1319,9 @@ Exemplo de estrutura:
         // Mensagem específica para usuários brasileiros
         const response = `🚫 **Limite de mensagens atingido!**\n\n` +
           `Você utilizou todas as suas mensagens disponíveis.\n\n` +
-          `💡 **Opções disponíveis:**\n` +
-          `• Entre em contato com seu administrador para aumentar o limite\n` +
-          `• Aguarde o próximo período de renovação\n\n` +
+          `💡 **Como fazer upgrade:**\n` +
+          `• Acesse o portal e escolha um plano: https://plataforma.lawx.ai/\n` +
+          `• O upgrade é feito diretamente no site\n\n` +
           `📞 **Suporte:** Entre em contato conosco para mais informações.`;
         
         await this.sendMessage(phone, response);
@@ -1431,6 +1340,48 @@ Exemplo de estrutura:
           );
           
           await this.sendMessage(phone, localizedMessage);
+
+          // Em seguida, enviar lista de planos disponíveis (exclui Fremium) para PT/ES
+          // await this.sendPlanOptionsAfterLimit(phone, jurisdiction.jurisdiction);
+
+          // NOVO: Enviar landing page de upgrade por jurisdição (standby)
+          const landingUrl = jurisdiction.jurisdiction === 'ES' ? 'https://es.lawx.ai' : 'https://pt.lawx.ai';
+          const landingMsg = jurisdiction.jurisdiction === 'ES'
+            ? `🚀 **Actualiza tu plan**\n\n` +
+              `Para continuar, accede a nuestra página y elige el plan que prefieras:\n${landingUrl}\n\n` +
+              `Allí verás todos los planes disponibles y podrás completar la suscripción con seguridad.`
+            : `🚀 **Atualize o seu plano**\n\n` +
+              `Para continuar, aceda à nossa página e escolha o plano que preferir:\n${landingUrl}\n\n` +
+              `Lá verá todos os planos disponíveis e poderá concluir a subscrição com segurança.`;
+          await this.sendMessage(phone, landingMsg);
+
+          return;
+
+          // Criar sessão inicial de upgrade (STANDBY)
+          // Observação importante:
+          // - Mantemos toda a infraestrutura do fluxo de upgrade (sessão, roteamento, engine)
+          // - NÃO removemos nem desativamos o fluxo; apenas deixamos a sessão criada
+          // - O avanço do fluxo no WhatsApp fica em standby, pois o usuário seguirá pela landing
+          // - Caso volte a interagir no WhatsApp, a sessão já existe e poderá ser retomada
+          if (user) {
+            try {
+              await this.upgradeSessionsService.createSession({
+                user_id: user.id,
+                phone,
+                plan_name: '',
+                billing_cycle: 'monthly',
+                amount: 0,
+                current_step: 'plan_selection',
+                jurisdiction: jurisdiction.jurisdiction,
+              });
+            } catch {}
+          }
+          // STANDBY: não alterar o estado da conversa para evitar continuar o fluxo no WhatsApp
+          // Deixe o estado do usuário como está; o fluxo pode ser retomado no futuro
+          // const state = this.getConversationState(phone);
+          // state.isInUpgradeFlow = true;
+          // state.upgradeStep = 'plan_selection';
+          // this.setConversationState(phone, state);
         } catch (aiError) {
           this.logger.error('Erro ao gerar mensagem localizada:', aiError);
           
@@ -1453,9 +1404,56 @@ Exemplo de estrutura:
     }
   }
 
-  /**
-   * Mostra menu jurídico localizado
-   */
+  private async sendPlanOptionsAfterLimit(phone: string, jurisdiction: string): Promise<void> {
+    try {
+      const plans = await this.getUpgradePlans(jurisdiction);
+      if (!plans || plans.length === 0) {
+        return;
+      }
+
+      const isES = jurisdiction === 'ES';
+      const currency = (jurisdiction === 'ES' || jurisdiction === 'PT') ? '€' : 'R$';
+      const title = isES ? '📋 Planes disponibles (Mensual/Anual):' : '📋 Planos disponíveis (Mensal/Anual):';
+      const monthlyLabel = isES ? 'Mensual' : 'Mensal';
+      const annualLabel = isES ? 'Anual' : 'Anual';
+      const discountWord = isES ? 'descuento' : 'desconto';
+      const unlimitedText = isES ? 'Límites: ilimitados' : 'Limites: ilimitados';
+
+      const limitsLine = (plan: any) => {
+        if (plan.is_unlimited) return unlimitedText;
+        if (isES) {
+          return `Límites: consultas ${plan.consultation_limit ?? 0}/mes • análisis ${plan.document_analysis_limit ?? 0}/mes • mensajes ${plan.message_limit ?? 0}/mes`;
+        }
+        return `Limites: consultas ${plan.consultation_limit ?? 0}/mês • análises ${plan.document_analysis_limit ?? 0}/mês • mensagens ${plan.message_limit ?? 0}/mês`;
+      };
+
+      const lines: string[] = [];
+      lines.push(title);
+      for (const plan of plans) {
+        const hasDiscount = plan.yearly_price < (plan.monthly_price * 12);
+        const discountText = hasDiscount
+          ? ` (${Math.round(((plan.monthly_price * 12 - plan.yearly_price) / (plan.monthly_price * 12)) * 100)}% de ${discountWord})`
+          : '';
+
+        lines.push(
+          `
+⭐ ${plan.name.toUpperCase()}
+• ${monthlyLabel}: ${currency} ${plan.monthly_price.toFixed(2)}/${isES ? 'mes' : 'mês'}
+• ${annualLabel}: ${currency} ${plan.yearly_price.toFixed(2)}/${isES ? 'año' : 'ano'}${discountText}
+• ${limitsLine(plan)}`.trim()
+        );
+      }
+
+      lines.push(isES
+        ? '\n💬 Responde con el nombre del plan (p. ej.: "Pro" o "Premium").'
+        : '\n💬 Responda com o nome do plano (ex.: "Pro" ou "Premium").'
+      );
+      await this.sendMessageWithTyping(phone, lines.join('\n'), 1500);
+    } catch (error) {
+      this.logger.error('Erro ao enviar lista de planos após limite:', error);
+    }
+  }
+
   private async showLegalMenu(phone: string, jurisdiction: string): Promise<void> {
     try {
       // ✅ NOVO: Gerar menu localizado com IA
@@ -1484,7 +1482,7 @@ Estrutura:
 • [Instruções]
 *Aviso sobre consulta a advogado*`;
 
-      const localizedMenu = await this.aiService.executeCustomPrompt(
+      const localizedMenu = await this.aiGateway.executeCustomPrompt(
         menuPrompt,
         'gpt-3.5-turbo',
         'Você é um especialista em criar menus jurídicos localizados para assistentes jurídicos. Seja profissional e útil.',
@@ -1511,7 +1509,7 @@ Estrutura:
     }
   }
 
-  private async detectUpgradeIntent(text: string, userId: string): Promise<{
+  private async detectUpgradeIntent(text: string, userId: string, jurisdiction: string): Promise<{
     isUpgradeIntent: boolean;
     confidence: number;
     intent: 'new_upgrade' | 'continue_upgrade' | 'payment_confirmation' | 'frequency_selection' | 'plan_selection' | 'cancel_upgrade';
@@ -1521,13 +1519,13 @@ Estrutura:
       this.logger.log('🔄 Detectando intent de upgrade com IA:', text);
       
       // Verificar se há sessão ativa primeiro
-      const activeSession = await this.upgradeSessionsService.getActiveSession(userId);
+      const activeSession = await this.upgradeSessionsService.getActiveSession(userId, jurisdiction);
       const state = this.getConversationState(userId.replace('@s.whatsapp.net', ''));
       
       // Se há sessão ativa ou estado de upgrade, analisar no contexto
       if (activeSession || state.isInUpgradeFlow) {
         this.logger.log('🔄 Sessão ativa encontrada, analisando contexto...');
-        return await this.analyzeUpgradeContext(text, activeSession, state);
+        return await this.analyzeUpgradeContext(text, activeSession, state, jurisdiction);
       }
       
       // Se não há sessão, verificar se é um novo intent de upgrade
@@ -1553,7 +1551,7 @@ Estrutura:
     }
   }
 
-  private async analyzeUpgradeContext(text: string, session: any, state: any): Promise<{
+  private async analyzeUpgradeContext(text: string, session: any, state: any, jurisdiction: string): Promise<{
     isUpgradeIntent: boolean;
     confidence: number;
     intent: 'new_upgrade' | 'continue_upgrade' | 'payment_confirmation' | 'frequency_selection' | 'plan_selection' | 'cancel_upgrade';
@@ -1587,7 +1585,7 @@ Estrutura:
     } catch (error) {
       this.logger.error('❌ Erro ao analisar contexto:', error);
       // Fallback para detecção manual
-      return await this.fallbackUpgradeIntentDetection(text, session, state, 'BR'); // Default para BR
+      return await this.fallbackUpgradeIntentDetection(text, session, state, jurisdiction);
     }
   }
 
@@ -1603,6 +1601,28 @@ Estrutura:
       const newUpgradeIntent = await this.aiService.detectNewPlanUpgradeIntent(text);
       
       this.logger.log('🤖 Novo intent detectado:', newUpgradeIntent);
+      
+      // Se IA não identificar claramente, usar fallback por palavras-chave (PT/ES)
+      if (!newUpgradeIntent.isUpgradeIntent) {
+        const lower = text.toLowerCase();
+        const keywords = [
+          // PT
+          'upgrade', 'assinar', 'assinatura', 'plano', 'pago', 'premium', 'pro', 'mensal', 'anual',
+          'trocar plano', 'mudar plano', 'quero plano', 'quero assinar', 'quero o pro', 'quero o premium',
+          // ES
+          'suscripcion', 'suscripción', 'suscribirme', 'suscribir', 'plan', 'mejorar', 'actualizar plan', 'cambiar plan',
+          'quiero plan', 'quiero suscribirme', 'pagar', 'precio'
+        ];
+        const hasKeyword = keywords.some(k => lower.includes(k));
+        if (hasKeyword) {
+          return {
+            isUpgradeIntent: true,
+            confidence: Math.max(newUpgradeIntent.confidence || 0.5, 0.6),
+            intent: 'new_upgrade',
+            context: { isNewIntent: true, detectedBy: 'keywords' }
+          };
+        }
+      }
       
       return {
         isUpgradeIntent: newUpgradeIntent.isUpgradeIntent,
@@ -1712,110 +1732,7 @@ Estrutura:
   }
 
   private async downloadImage(messageData: any): Promise<Buffer> {
-    try {
-      const imageUrl = messageData.message?.imageMessage?.url;
-      
-      // Primeira tentativa: usar a API de mídia do WhatsApp (base64)
-      try {
-        return await this.downloadFromWhatsAppMedia(messageData);
-      } catch (mediaError) {
-        console.log('📥 Falha na API de mídia (base64), tentando fallback:', mediaError.message);
-      }
-
-      // Segunda tentativa: usar o mesmo endpoint como fallback
-      try {
-        return await this.downloadFromMessagesAPI(messageData);
-      } catch (fallbackError) {
-        console.log('📥 Falha no fallback (base64), tentando download direto:', fallbackError.message);
-      }
-
-      // Terceira tentativa: download direto com headers específicos (se tiver URL)
-      if (!imageUrl) {
-        throw new Error('URL da imagem não encontrada para download direto');
-      }
-
-      const headers = {
-        'User-Agent': 'WhatsApp/2.23.24.78 A',
-        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'image',
-        'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Site': 'cross-site',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Referer': 'https://web.whatsapp.com/',
-      };
-      
-      // Primeira tentativa: seguir redirecionamentos
-      let response;
-      try {
-        response = await axios.get(imageUrl, { 
-          responseType: 'arraybuffer',
-          headers,
-          timeout: 30000,
-          maxRedirects: 10,
-          validateStatus: (status) => status < 400,
-        });
-      } catch (redirectError) {
-        // Segunda tentativa: sem seguir redirecionamentos
-        response = await axios.get(imageUrl, { 
-          responseType: 'arraybuffer',
-          headers,
-          timeout: 30000,
-          maxRedirects: 0,
-          validateStatus: (status) => status < 400,
-        });
-      }
-
-      const buffer = Buffer.from(response.data);
-
-      // Verificar se o buffer tem conteúdo
-      if (buffer.length === 0) {
-        throw new Error('Buffer vazio recebido');
-      }
-
-      // Verificar se é realmente uma imagem
-      const contentType = response.headers['content-type'];
-      if (!contentType || !contentType.startsWith('image/')) {
-        console.warn('⚠️ Content-Type não é uma imagem:', contentType);
-        
-        // Tentar detectar formato pelos primeiros bytes
-        const firstBytes = buffer.slice(0, 8);
-        console.log('📥 Primeiros bytes:', firstBytes.toString('hex'));
-        
-        // Verificar se é um arquivo JPEG válido
-        const isJPEG = firstBytes[0] === 0xFF && firstBytes[1] === 0xD8 && firstBytes[2] === 0xFF;
-        const isPNG = firstBytes[0] === 0x89 && firstBytes[1] === 0x50 && firstBytes[2] === 0x4E && firstBytes[3] === 0x47;
-        const isWEBP = firstBytes.slice(0, 4).toString() === 'RIFF' && firstBytes.slice(8, 12).toString() === 'WEBP';
-        
-        console.log('📥 É JPEG:', isJPEG);
-        console.log('📥 É PNG:', isPNG);
-        console.log('📥 É WEBP:', isWEBP);
-        
-        if (!isJPEG && !isPNG && !isWEBP) {
-          console.warn('⚠️ Formato de imagem não reconhecido pelos primeiros bytes');
-          
-          // Tentar converter se parecer ser uma imagem corrompida
-          if (buffer.length > 1000) { // Arquivo grande o suficiente para ser uma imagem
-            console.log('📥 Tentando processar como imagem potencialmente corrompida...');
-          }
-        }
-      }
-
-      return buffer;
-    } catch (error) {
-      console.error('❌ Erro ao baixar imagem:', error);
-      
-      if (error.response) {
-        console.error('❌ Status da resposta:', error.response.status);
-        console.error('❌ Headers da resposta:', error.response.headers);
-        console.error('❌ URL final:', error.response.request?.res?.responseUrl);
-      }
-      
-      throw new Error(`Falha ao baixar imagem: ${error.message}`);
-    }
+    return this.mediaDownloader.downloadImageFromMessage(messageData);
   }
 
   private async downloadFromWhatsAppMedia(messageData: any): Promise<Buffer> {
@@ -2011,46 +1928,7 @@ Estrutura:
    * @param typingDelay - Tempo em milissegundos para typing presence (padrão: 1500ms, undefined para usar padrão, 0 para desabilitar)
    */
   async sendMessage(phone: string, message: string, typingDelay?: number): Promise<void> {
-    try {
-      const evolutionApiUrl = this.configService.get('EVOLUTION_API_URL');
-      const instanceName = this.configService.get('EVOLUTION_INSTANCE_NAME');
-      const apiKey = this.configService.get('EVOLUTION_API_KEY');
-
-      console.log('📤 Enviando mensagem para:', phone);
-      console.log('📤 URL da API:', `${evolutionApiUrl}/message/sendText/${instanceName}`);
-      console.log('📤 Mensagem:', message);
-      console.log('⌨️ Typing delay:', typingDelay || 'padrão (1500ms)');
-
-      // ✅ NOVO: Enviar typing presence antes da mensagem (se delay especificado ou usar padrão)
-      if (typingDelay !== 0) {
-        const delay = typingDelay || 1500; // Delay padrão de 1.5 segundos
-        await this.sendTypingPresence(phone, delay);
-        
-        // Aguardar o delay antes de enviar a mensagem
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-
-      const response = await axios.post(
-        `${evolutionApiUrl}/message/sendText/${instanceName}`,
-        {
-          number: phone,
-          text: message,
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': apiKey,
-          },
-        }
-      );
-
-      console.log('✅ Mensagem enviada com sucesso:', response.data);
-      this.logger.log(`Mensagem enviada para ${phone}${typingDelay !== undefined ? ` (delay: ${typingDelay || 1500}ms)` : ''}`);
-    } catch (error) {
-      console.error('❌ Erro ao enviar mensagem:', error);
-      console.error('❌ Detalhes do erro:', error.response?.data);
-      this.logger.error('Erro ao enviar mensagem:', error);
-    }
+    await this.whatsappClient.sendText(phone, message, typingDelay);
   }
 
   /**
@@ -2078,37 +1956,7 @@ Estrutura:
    * @param delay - Tempo em milissegundos para manter o status (padrão: 1200ms)
    */
   async sendTypingPresence(phone: string, delay: number = 1200): Promise<void> {
-    try {
-      const evolutionApiUrl = this.configService.get('EVOLUTION_API_URL');
-      const instanceName = this.configService.get('EVOLUTION_INSTANCE_NAME');
-      const apiKey = this.configService.get('EVOLUTION_API_KEY');
-
-      console.log('⌨️ Enviando status "Digitando..." para:', phone);
-      console.log('⌨️ Delay:', delay, 'ms');
-
-      const response = await axios.post(
-        `${evolutionApiUrl}/chat/sendPresence/${instanceName}`,
-        {
-          number: phone,
-          delay: delay,
-          presence: 'composing'
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': apiKey,
-          },
-        }
-      );
-
-      console.log('✅ Status "Digitando..." enviado com sucesso:', response.data);
-      this.logger.log(`Status "Digitando..." enviado para ${phone}`);
-    } catch (error) {
-      console.error('❌ Erro ao enviar status "Digitando...":', error);
-      console.error('❌ Detalhes do erro:', error.response?.data);
-      this.logger.error('Erro ao enviar status "Digitando...":', error);
-      // Não lançar erro para não interromper o fluxo principal
-    }
+    await this.whatsappClient.sendTyping(phone, delay);
   }
 
   /**
@@ -2122,6 +1970,7 @@ Jurisdição: ${jurisdiction === 'ES' ? 'Espanha' : 'Portugal'}
 Idioma: ${jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'}
 Uso atual: ${currentUsage} mensagens
 Limite: ${limit} mensagens
+Você deve responder em ${jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'} de forma obrigatória.
 
 Requisitos:
 - Deve mencionar obrigatoriamente "Chat LawX"
@@ -2135,11 +1984,11 @@ Requisitos:
 
 Exemplo de estrutura:
 [Emoji] [Aviso sobre limite atingido]
-[Emoji] [Informação sobre uso atual]
-[Emoji] [Opções disponíveis]
-[Emoji] [Informação sobre upgrade]`;
+[Informação sobre uso atual]
+[Opções disponíveis]
+[Informação sobre upgrade]`;
 
-      const message = await this.aiService.executeCustomPrompt(
+      const message = await this.aiGateway.executeCustomPrompt(
         prompt,
         'gpt-3.5-turbo',
         'Você é um especialista em criar mensagens de limite excedido para assistentes jurídicos. Seja claro e ofereça soluções.',
@@ -2178,77 +2027,21 @@ Utilizou todas as suas mensagens disponíveis (${currentUsage}/${limit}).
   }
 
   async sendImage(phone: string, base64Image: string, caption?: string): Promise<void> {
-    try {
-      const evolutionApiUrl = this.configService.get('EVOLUTION_API_URL');
-      const instanceName = this.configService.get('EVOLUTION_INSTANCE_NAME');
-      const apiKey = this.configService.get('EVOLUTION_API_KEY');
-
-      console.log('📤 Enviando imagem para:', phone);
-      console.log('📤 URL da API:', `${evolutionApiUrl}/message/sendMedia/${instanceName}`);
-
-      const response = await axios.post(
-        `${evolutionApiUrl}/message/sendMedia/${instanceName}`,
-        {
-          number: phone,
-          mediatype: 'image',
-          mimetype: 'image/png',
-          media: base64Image,
-          caption: caption || '',
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': apiKey,
-          },
-        }
-      );
-
-      console.log('✅ Imagem enviada com sucesso:', response.data);
-      this.logger.log(`Imagem enviada para ${phone}`);
-    } catch (error) {
-      console.error('❌ Erro ao enviar imagem:', error);
-      console.error('❌ Detalhes do erro:', error.response?.data);
-      this.logger.error('Erro ao enviar imagem:', error);
-    }
+    await this.whatsappClient.sendImage(phone, base64Image, caption);
   }
 
   private getConversationState(phone: string): ConversationState {
-    const state = this.conversationStates.get(phone);
-    return state || {
-      isWaitingForName: false,
-      isWaitingForEmail: false,
-      isWaitingForConfirmation: false,
-      isWaitingForBrazilianName: false,
-      isWaitingForWhatsAppName: false, // NOVO: Para controle de nome em ES/PT
-      isInUpgradeFlow: false,
-      isInRegistrationFlow: false,
-      upgradeStep: 'introduction',
-      registrationStep: 'introduction',
-      isInAnalysis: false,
-      analysisStartTime: undefined,
-    };
+    const state = this.stateStore.get(phone);
+    return state || this.createDefaultState();
   }
 
   private setConversationState(phone: string, state: Partial<ConversationState>): void {
-    const currentState = this.conversationStates.get(phone) || {
-      isWaitingForName: false,
-      isWaitingForEmail: false,
-      isWaitingForConfirmation: false,
-      isWaitingForBrazilianName: false,
-      isWaitingForWhatsAppName: false, // NOVO: Para controle de nome em ES/PT
-      isInUpgradeFlow: false,
-      isInRegistrationFlow: false,
-      registrationStep: 'introduction',
-      upgradeStep: 'introduction',
-      isInAnalysis: false,
-      analysisStartTime: undefined
-    };
-    
-    this.conversationStates.set(phone, { ...currentState, ...state });
+    const currentState = this.stateStore.get(phone) || this.createDefaultState();
+    this.stateStore.set(phone, { ...currentState, ...state });
   }
 
   private clearConversationState(phone: string): void {
-    this.conversationStates.delete(phone);
+    this.stateStore.clear(phone);
   }
 
   /**
@@ -2260,26 +2053,15 @@ Utilizou todas as suas mensagens disponíveis (${currentUsage}/${limit}).
     jurisdiction: string;
     analysisStartTime: number;
   }> {
-    const usersInAnalysis: Array<{
-      phone: string;
-      jurisdiction: string;
-      analysisStartTime: number;
-    }> = [];
-
-    for (const [phone, state] of this.conversationStates.entries()) {
+    const result: Array<{ phone: string; jurisdiction: string; analysisStartTime: number }> = [];
+    const entries = this.stateStore.entries();
+    for (const { phone, state } of entries) {
       if (state.isInAnalysis && state.analysisStartTime) {
-        // ✅ NOVO: Usar jurisdição armazenada no estado (para casos forçados) ou detectar
         const jurisdiction = state.jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
-        
-        usersInAnalysis.push({
-          phone,
-          jurisdiction,
-          analysisStartTime: state.analysisStartTime,
-        });
+        result.push({ phone, jurisdiction, analysisStartTime: state.analysisStartTime });
       }
     }
-
-    return usersInAnalysis;
+    return result;
   }
 
   /**
@@ -2297,19 +2079,19 @@ Utilizou todas as suas mensagens disponíveis (${currentUsage}/${limit}).
     }
   }
 
-  private async handleUpgradeFlow(phone: string, userId: string, userMessage: string): Promise<void> {
+  private async handleUpgradeFlow(phone: string, userId: string, userMessage: string, jurisdiction?: string): Promise<void> {
     try {
       console.log('🔄 Iniciando fluxo de upgrade com contexto...');
       
       // Verificar se há sessão ativa
-      const activeSession = await this.upgradeSessionsService.getActiveSession(userId);
+      const activeSession = await this.upgradeSessionsService.getActiveSession(userId, jurisdiction);
       
       if (activeSession) {
         this.logger.log('🔄 Sessão ativa encontrada, continuando...');
         await this.continueUpgradeFlowWithContext(phone, userId, userMessage, activeSession);
       } else {
         this.logger.log('🆕 Nova sessão de upgrade iniciada');
-        await this.startNewUpgradeFlow(phone, userId, userMessage);
+        await this.startNewUpgradeFlow(phone, userId, userMessage, jurisdiction);
       }
     } catch (error) {
       this.logger.error('❌ Erro no fluxo de upgrade:', error);
@@ -2317,12 +2099,21 @@ Utilizou todas as suas mensagens disponíveis (${currentUsage}/${limit}).
     }
   }
 
-  private async startNewUpgradeFlow(phone: string, userId: string, userMessage: string): Promise<void> {
+  private async startNewUpgradeFlow(phone: string, userId: string, userMessage: string, forcedJurisdiction?: string): Promise<void> {
     try {
       this.logger.log('🆕 Iniciando novo fluxo de upgrade...');
       
+      // Apenas PT/ES têm fluxo conversacional de upgrade
+      const jurisdiction = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+      if (jurisdiction === 'BR') {
+        const response = '🚀 Para fazer upgrade do seu plano, acesse: https://plataforma.lawx.ai/\n\n' +
+          'Lá você encontrará os planos disponíveis e poderá concluir o upgrade com segurança.';
+        await this.sendMessage(phone, response);
+        return;
+      }
+      
       // Verificar se a mensagem já especifica um plano
-      const selectedPlanName = await this.detectPlanFromMessage(userMessage);
+      const selectedPlanName = await this.detectPlanFromMessage(userMessage, jurisdiction);
       
       if (selectedPlanName) {
         // Usuário já especificou o plano
@@ -2331,7 +2122,7 @@ Utilizou todas as suas mensagens disponíveis (${currentUsage}/${limit}).
       } else {
         // Perguntar sobre o plano
         this.logger.log('❓ Perguntando sobre plano...');
-        const plans = await this.getUpgradePlans();
+        const plans = await this.getUpgradePlans(jurisdiction);
         
         const planOptions = plans.map(plan => {
           const discount = plan.yearly_price < (plan.monthly_price * 12) 
@@ -2353,7 +2144,7 @@ ${planOptions}
 
         await this.sendMessage(phone, upgradeMessage);
         
-        // Criar sessão inicial (apenas para usuários não brasileiros)
+        // Criar sessão inicial
         const user = await this.usersService.getOrCreateUser(phone);
         if (user) {
         await this.upgradeSessionsService.createSession({
@@ -2362,7 +2153,8 @@ ${planOptions}
           plan_name: '',
           billing_cycle: 'monthly',
           amount: 0,
-          current_step: 'plan_selection'
+            current_step: 'plan_selection',
+            jurisdiction
         });
         }
       }
@@ -2486,12 +2278,16 @@ ${planOptions}
 
   private async processPlanSelection(phone: string, userId: string, userMessage: string, existingSession?: any): Promise<void> {
     try {
-      const selectedPlanName = await this.detectPlanFromMessage(userMessage);
+      let jurisdiction = this.resolveUpgradeJurisdiction(phone, existingSession);
+      const selectedPlanName = await this.detectPlanFromMessage(userMessage, jurisdiction);
+      this.logger.log('🔍 Plano selecionado:', selectedPlanName);
+      this.logger.log('🔍 Jurisdição:', jurisdiction);
       
       if (!selectedPlanName) {
-        const plans = await this.getUpgradePlans();
+        const plans = await this.getUpgradePlans(jurisdiction);
         const planNames = plans.map(p => p.name).join(' ou ');
-        await this.sendMessage(phone, `❓ Qual plano você gostaria? ${planNames}?`);
+        const isES = jurisdiction === 'ES';
+        await this.sendMessage(phone, isES ? `❓ ¿Qué plan te gustaría? ${planNames}?` : `❓ Qual plano você gostaria? ${planNames}?`);
         return;
       }
       
@@ -2499,39 +2295,55 @@ ${planOptions}
       const selectedPlan = await this.getPlanByName(selectedPlanName);
       
       // Perguntar sobre frequência de pagamento
-      const discount = selectedPlan.yearly_price < (selectedPlan.monthly_price * 12) 
-        ? ` (${Math.round(((selectedPlan.monthly_price * 12 - selectedPlan.yearly_price) / (selectedPlan.monthly_price * 12)) * 100)}% de desconto)`
+      const hasDiscount = selectedPlan.yearly_price < (selectedPlan.monthly_price * 12);
+      const isES = jurisdiction === 'ES';
+      const currency = (jurisdiction === 'ES' || jurisdiction === 'PT') ? '€' : 'R$';
+      const discountText = hasDiscount
+        ? ` (${Math.round(((selectedPlan.monthly_price * 12 - selectedPlan.yearly_price) / (selectedPlan.monthly_price * 12)) * 100)}% ${isES ? 'de descuento' : 'de desconto'})`
         : '';
-      
-      const frequencyMessage = `✅ **Plano selecionado: ${selectedPlan.name}**
+      const monthlyLabel = isES ? 'Mensual' : 'Mensal';
+      const monthWord = isES ? 'mes' : 'mês';
+      const annualLabel = isES ? 'Anual' : 'Anual';
+      const header = isES ? `✅ *Plan seleccionado: ${selectedPlan.name}*` : `✅ *Plano selecionado: ${selectedPlan.name}*`;
+      const chooseFreq = isES ? 'Ahora, elige la frecuencia de pago:' : 'Agora escolha a frequência de pagamento:';
+      const recommend = isES ? '💡 *Recomendamos el plan anual* - ¡Ahorras más!' : '💡 *Recomendamos o plano anual* - Você economiza mais!';
+      const ask = isES ? '¿Cuál frecuencia prefieres?' : 'Qual a frequência de pagamento ideal para você?';
 
-Agora escolha a frequência de pagamento:
+      const frequencyMessage = `${header}
 
-🟢 **Mensal:** R$ ${selectedPlan.monthly_price.toFixed(2)}/mês
-🟢 **Anual:** R$ ${selectedPlan.yearly_price.toFixed(2)}/ano${discount}
+${chooseFreq}
 
-💡 **Recomendamos o plano anual** - Você economiza mais!`;
+🟢 *${monthlyLabel}:* ${currency} ${selectedPlan.monthly_price.toFixed(2)}/${monthWord}
+🟢 *${annualLabel}:* ${currency} ${selectedPlan.yearly_price.toFixed(2)}/${isES ? 'año' : 'ano'}${discountText}
+
+${recommend}`;
 
       await this.sendMessage(phone, frequencyMessage);
-      await this.sendMessage(phone, 'Qual a frequência de pagamento ideal para você?');
+      await this.sendMessage(phone, ask);
       
       // Criar ou atualizar sessão com apenas o plano selecionado
-      let session;
-      if (existingSession) {
+      let session = existingSession;
+      if (session) {
         session = await this.upgradeSessionsService.updateSession(existingSession.id, {
           plan_name: selectedPlan.name,
           current_step: 'plan_selection'
         });
       } else {
+        // Tentar reaproveitar sessão ativa existente
+        session = await this.upgradeSessionsService.getActiveSession(userId, jurisdiction);
+      }
+
+      if (!session) {
         const user = await this.usersService.getOrCreateUser(phone);
         if (user) {
         session = await this.upgradeSessionsService.createSession({
           user_id: userId,
           phone: phone,
           plan_name: selectedPlan.name,
-          billing_cycle: 'monthly', // Temporário, será atualizado
-          amount: 0, // Será calculado quando escolher frequência
-          current_step: 'plan_selection'
+            billing_cycle: 'monthly',
+            amount: 0,
+            current_step: 'plan_selection',
+            jurisdiction,
         });
         }
       }
@@ -2552,34 +2364,70 @@ Agora escolha a frequência de pagamento:
 
   private async processFrequencySelection(phone: string, userId: string, userMessage: string): Promise<void> {
     try {
-      const user = await this.usersService.findByPhone(phone);
+      const jurisdiction = this.resolveUpgradeJurisdiction(phone);
+      const user = await this.usersService.getOrCreateUser(phone, jurisdiction);
       if (!user) {
-        await this.sendMessage(phone, '❌ Usuário não encontrado.');
+        const isESnf = jurisdiction === 'ES';
+        await this.sendMessage(phone, isESnf ? '❌ Usuario no encontrado.' : '❌ Usuário não encontrado.');
         return;
       }
 
-      const lowerMessage = userMessage.toLowerCase();
-      let billingCycle: 'monthly' | 'yearly' = 'monthly';
-      
-      // Detectar frequência
-      if (lowerMessage.includes('anual') || lowerMessage.includes('yearly') || lowerMessage.includes('ano')) {
-        billingCycle = 'yearly';
-      } else if (lowerMessage.includes('mensal') || lowerMessage.includes('monthly') || lowerMessage.includes('mês')) {
-        billingCycle = 'monthly';
+      // Detectar frequência com IA
+      let billingCycle: 'monthly' | 'yearly' | null = null;
+      const isES = jurisdiction === 'ES';
+
+      const freqAnalysis = await this.aiService.detectPlanFrequencySelection(userMessage);
+      if (freqAnalysis.frequency && freqAnalysis.confidence >= 0.6) {
+        billingCycle = freqAnalysis.frequency;
       } else {
-        await this.sendMessage(phone, '❓ Escolha a frequência: "mensal" ou "anual"?');
+        // Fallback: pedir esclarecimento no idioma
+        await this.sendMessage(
+          phone,
+          isES
+            ? '❓ No entendí la frecuencia. ¿Prefieres pago "mensual" o "anual"?'
+            : '❓ Não entendi a frequência. Prefere pagamento "mensal" ou "anual"?'
+        );
         return;
       }
       
       // Buscar sessão ativa
-      const session = await this.upgradeSessionsService.getActiveSession(userId);
+      const session = await this.upgradeSessionsService.getActiveSession(userId, jurisdiction);
       if (!session) {
-        await this.sendMessage(phone, '❌ Sessão não encontrada. Digite "quero assinar" para começar novamente.');
+        await this.sendMessage(phone, isES ? '❌ Sesión no encontrada. Escribe "quiero suscribirme" para comenzar de nuevo.' : '❌ Sessão não encontrada. Digite "quero assinar" para começar novamente.');
         return;
+      }
+
+      // Garantir que há um plano selecionado antes de processar a frequência
+      let planName = session.plan_name;
+      if (!planName) {
+        const state = this.getConversationState(phone);
+        if (state?.selectedPlan) {
+          // Atualizar sessão com plano do estado
+          await this.upgradeSessionsService.updateSession(session.id, {
+            plan_name: state.selectedPlan,
+            current_step: 'plan_selection',
+          });
+          planName = state.selectedPlan;
+        } else {
+          const plans = await this.getUpgradePlans(jurisdiction);
+          const planNames = plans.map(p => p.name).join(isES ? ' o ' : ' ou ');
+          await this.sendMessage(
+            phone,
+            isES
+              ? `❓ Antes de elegir la frecuencia, dime el plan: ${planNames}?`
+              : `❓ Antes de escolher a frequência, informe o plano: ${planNames}?`
+          );
+          // Colocar estado em seleção de plano
+          const newState = this.getConversationState(phone);
+          newState.isInUpgradeFlow = true;
+          newState.upgradeStep = 'plan_selection';
+          this.setConversationState(phone, newState);
+          return;
+        }
       }
       
       // Buscar dados do plano para calcular preço
-      const plan = await this.getPlanByName(session.plan_name);
+      const plan = await this.getPlanByName(planName);
       const planPrice = billingCycle === 'monthly' ? plan.monthly_price : plan.yearly_price;
       
       // Atualizar sessão com frequência e preço
@@ -2590,22 +2438,37 @@ Agora escolha a frequência de pagamento:
       });
       
       // Buscar limites do plano
-      const planLimits = await this.getPlanLimits(plan.name, user.jurisdiction);
+      const planLimits = await this.getPlanLimits(plan.name, user.jurisdiction || jurisdiction);
       
       // Enviar confirmação
-      const confirmationMessage = `✅ **Confirmação do Pedido:**
+      const currency = (jurisdiction === 'ES' || jurisdiction === 'PT') ? '€' : 'R$';
+      const confirmationMessage = isES
+        ? `✅ **Confirmación del pedido:**
+
+📋 **Plan:** ${plan.name}
+💰 **Frecuencia:** ${billingCycle === 'monthly' ? 'Mensual' : 'Anual'}
+💵 **Valor:** ${currency} ${planPrice.toFixed(2)}
+
+🚀 **Lo que tendrás:**
+${planLimits}
+
+💳 **Arriba están todas las informaciones de tu plan**`
+        : `✅ **Confirmação do pedido:**
 
 📋 **Plano:** ${plan.name}
 💰 **Frequência:** ${billingCycle === 'monthly' ? 'Mensal' : 'Anual'}
-💵 **Valor:** R$ ${planPrice.toFixed(2)}
+💵 **Valor:** ${currency} ${planPrice.toFixed(2)}
 
 🚀 **O que você terá:**
 ${planLimits}
 
-💳 **Acima está todas as informações do seu plano**`;
+💳 **Acima estão todas as informações do seu plano**`;
 
       await this.sendMessage(phone, confirmationMessage);
-      await this.sendMessage(phone, 'Posso gerar seu pagamento? Ah! no momento não temos suporte a cartão de crédito, mas aceitamos PIX.');
+      await this.sendMessage(phone, isES
+        ? '¿Puedo generar tu pago? Por ahora no aceptamos tarjeta de crédito, pero aceptamos PIX.'
+        : 'Posso gerar seu pagamento? No momento não temos suporte a cartão de crédito, mas aceitamos PIX.'
+      );
       
       // Atualizar estado da conversa
       const state = this.getConversationState(phone);
@@ -2721,7 +2584,7 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       
       // Usar Evolution API para baixar o áudio
       this.logger.log('🎵 Tentando download via Evolution API...');
-      const audioBuffer = await this.downloadFromEvolutionMediaAPI(message);
+      const audioBuffer = await this.mediaDownloader.downloadAudioFromMessage(message);
       
       if (!audioBuffer) {
         this.logger.error('❌ Falha ao baixar áudio via Evolution API');
@@ -2735,21 +2598,9 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       this.logger.log('🔍 Primeiros bytes do arquivo:', firstBytes.toString('hex'));
       
       // Converter para MP3 para melhor compatibilidade
-      try {
-        const mp3Buffer = await this.uploadService.convertAudioToMp3(audioBuffer);
+      const mp3Buffer = await this.audioProcessor.convertToMp3WithFallback(audioBuffer);
         this.logger.log('✅ Áudio convertido para MP3:', mp3Buffer.length, 'bytes');
         return mp3Buffer;
-      } catch (conversionError) {
-        this.logger.warn('⚠️ Falha na conversão para MP3, tentando conversão simples:', conversionError.message);
-        try {
-          const simpleBuffer = await this.uploadService.convertAudioSimple(audioBuffer);
-          this.logger.log('✅ Conversão simples concluída:', simpleBuffer.length, 'bytes');
-          return simpleBuffer;
-        } catch (simpleError) {
-          this.logger.warn('⚠️ Falha na conversão simples, usando buffer original:', simpleError.message);
-          return audioBuffer;
-        }
-      }
 
     } catch (error) {
       this.logger.error('❌ Erro ao processar áudio via Evolution API:', error);
@@ -2782,15 +2633,13 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
         
         // Converter para MP3 para melhor compatibilidade
         try {
-          const mp3Buffer = await this.uploadService.convertAudioToMp3(buffer);
+          const mp3Buffer = await this.audioProcessor.convertToMp3WithFallback(buffer);
           this.logger.log('✅ Áudio convertido para MP3:', mp3Buffer.length, 'bytes');
           return mp3Buffer;
         } catch (conversionError) {
           this.logger.warn('⚠️ Falha na conversão para MP3, tentando conversão simples:', conversionError.message);
           try {
-            const simpleBuffer = await this.uploadService.convertAudioSimple(buffer);
-            this.logger.log('✅ Conversão simples concluída:', simpleBuffer.length, 'bytes');
-            return simpleBuffer;
+            return buffer;
           } catch (simpleError) {
             this.logger.warn('⚠️ Falha na conversão simples, usando buffer original:', simpleError.message);
             return buffer;
@@ -2818,15 +2667,13 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
           
           // Converter para MP3 para melhor compatibilidade
           try {
-            const mp3Buffer = await this.uploadService.convertAudioToMp3(buffer);
+          const mp3Buffer = await this.audioProcessor.convertToMp3WithFallback(buffer);
             this.logger.log('✅ Áudio convertido para MP3:', mp3Buffer.length, 'bytes');
             return mp3Buffer;
           } catch (conversionError) {
             this.logger.warn('⚠️ Falha na conversão para MP3, tentando conversão simples:', conversionError.message);
             try {
-              const simpleBuffer = await this.uploadService.convertAudioSimple(buffer);
-              this.logger.log('✅ Conversão simples concluída:', simpleBuffer.length, 'bytes');
-              return simpleBuffer;
+              return buffer;
             } catch (simpleError) {
               this.logger.warn('⚠️ Falha na conversão simples, usando buffer original:', simpleError.message);
               return buffer;
@@ -2848,32 +2695,8 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
   private async downloadAudio(messageData: any): Promise<Buffer> {
     try {
       this.logger.log('🎵 Iniciando download de áudio...');
-      
-      const audioMessage = messageData.message?.audioMessage;
-      if (!audioMessage) {
-        throw new Error('Mensagem de áudio não encontrada');
-      }
-
-      this.logger.log('🎵 Dados do áudio:', JSON.stringify(audioMessage, null, 2));
-
-      // Método 1: Download via Evolution API Media Download (RECOMENDADO)
-      if (audioMessage.url) {
-        this.logger.log('🎵 Tentando download via Evolution API Media Download...');
-        const audioBuffer = await this.downloadFromEvolutionMediaAPI(audioMessage);
-        if (audioBuffer) {
-          return audioBuffer;
-        }
-      }
-
-      // Método 2: Download via URL direta (fallback)
-      if (audioMessage.url) {
-        this.logger.log('🎵 Tentando download direto da URL...');
-        const audioBuffer = await this.downloadDirectFromUrl(audioMessage.url);
-        if (audioBuffer) {
-          return audioBuffer;
-        }
-      }
-
+      const buf = await this.mediaDownloader.downloadAudioFromMessage(messageData);
+      if (buf && buf.length > 0) return buf;
       throw new Error('Não foi possível baixar o áudio');
 
     } catch (error) {
@@ -3006,31 +2829,14 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       this.logger.log('🤖 Análise da IA:', aiAnalysis);
 
       // Processar baseado na intenção detectada
-      switch (aiAnalysis.intent) {
-        case 'payment_confirmation':
-          await this.handlePaymentConfirmation(phone, userId, context);
-          break;
-          
-        case 'frequency_selection':
-          await this.handleFrequencySelectionWithAI(phone, userId, userMessage, context);
-          break;
-          
-        case 'plan_selection':
-          await this.handlePlanSelectionWithAI(phone, userId, userMessage, context);
-          break;
-          
-        case 'cancel_upgrade':
-          await this.handleCancelUpgrade(phone, userId, session);
-          break;
-          
-        case 'continue_upgrade':
-          await this.handleContinueUpgrade(phone, userId, userMessage, context);
-          break;
-          
-        default:
-          await this.handleContinueUpgrade(phone, userId, userMessage, context);
-          break;
-      }
+      // Mantido por compatibilidade; Engine já cobre o fluxo principal
+      await this.upgradeFlowEngine.route(phone, userId, userMessage, session, state, {
+        handlePaymentConfirmation: (p, u, ctx) => this.handlePaymentConfirmation(p, u, ctx),
+        handleFrequencySelectionWithAI: (p, u, m, ctx) => this.handleFrequencySelectionWithAI(p, u, m, ctx),
+        handlePlanSelectionWithAI: (p, u, m, ctx) => this.handlePlanSelectionWithAI(p, u, m, ctx),
+        handleCancelUpgrade: (p, u, s) => this.handleCancelUpgrade(p, u, s),
+        handleContinueUpgrade: (p, u, m, ctx) => this.handleContinueUpgrade(p, u, m, ctx),
+      });
 
     } catch (error) {
       this.logger.error('❌ Erro ao processar fluxo de upgrade com IA:', error);
@@ -3044,55 +2850,93 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       
       // Verificar se temos todas as informações necessárias
       if (!context.selectedPlan || !context.selectedFrequency) {
-        await this.sendMessage(phone, '❌ Informações do plano incompletas. Digite "quero assinar" para começar novamente.');
+        const jurisdiction = this.resolveUpgradeJurisdiction(phone);
+        const isES = jurisdiction === 'ES';
+        await this.sendMessage(phone, isES ? '❌ Información del plan incompleta. Escribe "quiero suscribirme" para empezar de nuevo.' : '❌ Informações do plano incompletas. Digite "quero assinar" para começar novamente.');
         return;
       }
 
       // Buscar dados do plano para calcular preço
       const plan = await this.getPlanByName(context.selectedPlan);
       const planPrice = context.selectedFrequency === 'monthly' ? plan.monthly_price : plan.yearly_price;
-      
-      const response = `🎉 **Excelente decisão! Vamos te ajudar na sua organização financeira!**
+      const jurisdiction = this.resolveUpgradeJurisdiction(phone);
+      const isES = jurisdiction === 'ES';
 
-✅ **Resumo do Pedido:**
-• Plano: ${context.selectedPlan}
-• Frequência: ${context.selectedFrequency === 'monthly' ? 'Mensal' : 'Anual'}
-• Valor: R$ ${planPrice.toFixed(2)}
-
-⏳ **Gerando PIX...**
-Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
-      
-      await this.sendMessage(phone, response);
-      
-      // Buscar ou criar sessão
-      let session = await this.upgradeSessionsService.getActiveSession(userId);
-      
+      // Buscar ou criar sessão e gerar Checkout do Stripe
+      let session = await this.upgradeSessionsService.getActiveSession(userId, jurisdiction);
       if (!session) {
-        // Criar nova sessão
         session = await this.upgradeSessionsService.createSession({
           user_id: userId,
           phone: phone,
           plan_name: context.selectedPlan,
           billing_cycle: context.selectedFrequency as 'monthly' | 'yearly',
           amount: planPrice,
-          current_step: 'payment_processing'
+          current_step: 'payment_processing',
+          jurisdiction,
         });
       } else {
-        // Atualizar sessão existente
         session = await this.upgradeSessionsService.updateSession(session.id, {
           plan_name: context.selectedPlan,
           billing_cycle: context.selectedFrequency as 'monthly' | 'yearly',
           amount: planPrice,
-          current_step: 'payment_processing'
+          current_step: 'payment_processing',
         });
       }
-      
-      // Gerar PIX
-      await this.generatePixPayment(phone, userId, context.selectedPlan, context.selectedFrequency, planPrice, session);
+
+      const { checkoutUrl } = await this.upgradeSessionsService.createStripeCheckoutSession(
+        userId,
+        context.selectedPlan,
+        context.selectedFrequency,
+        phone,
+        undefined // coletar e-mail no checkout
+      );
+
+      const currency = (jurisdiction === 'ES' || jurisdiction === 'PT') ? '€' : 'R$';
+      // Gerar mensagem localizada com IA contendo todas as informações da assinatura
+      try {
+        const features = Array.isArray((plan as any).features)
+          ? (plan as any).features.join('\n• ')
+          : '';
+        const prompt = `Gere uma mensagem de confirmação de pagamento para o Chat LawX (assistente jurídico) com tom profissional e claro.
+
+Idioma: ${isES ? 'Espanhol' : 'Português europeu'}
+Jurisdição: ${jurisdiction === 'ES' ? 'Espanha' : 'Portugal'}
+
+Informações obrigatórias a incluir (formate com negrito nos títulos e bullets quando fizer sentido):
+- Plano: ${context.selectedPlan}
+- Frequência: ${context.selectedFrequency === 'monthly' ? (isES ? 'Mensual' : 'Mensal') : (isES ? 'Anual' : 'Anual')}
+- Valor: ${currency} ${planPrice.toFixed(2)}
+- Principais funcionalidades do plano (se houver): ${features ? '\n• ' + features : 'não especificado'}
+- Link seguro para pagamento (CTA claro): ${checkoutUrl}
+- Observação curta sobre segurança (Stripe Checkout) e coleta de email no checkout
+
+Regras de saída:
+- Use obrigatoriamente ${isES ? 'Espanhol' : 'Português europeu'}.
+- Máximo 8 linhas.
+- Não invente informações não fornecidas.
+- Não inclua dados sensíveis.`;
+
+        const aiMsg = await this.aiGateway.executeCustomPrompt(
+          prompt,
+          'gpt-3.5-turbo',
+          'Você é um redator que prepara mensagens curtas e claras de confirmação de pagamento, mantendo apenas fatos fornecidos.',
+          0.4,
+          450
+        );
+
+        await this.sendMessage(phone, aiMsg);
+      } catch (genErr) {
+        this.logger.warn('Falha ao gerar mensagem com IA, usando fallback simples. Detalhe:', genErr);
+        const fallback = isES
+          ? `💳 **Listo para pagar!**\n\n📋 **Plan:** ${context.selectedPlan}\n⏱️ **Frecuencia:** ${context.selectedFrequency === 'monthly' ? 'Mensual' : 'Anual'}\n💵 **Valor:** ${currency} ${planPrice.toFixed(2)}\n\n✅ **Haz clic para completar el pago de forma segura:**\n${checkoutUrl}`
+          : `💳 **Pronto para pagar!**\n\n📋 **Plano:** ${context.selectedPlan}\n⏱️ **Frequência:** ${context.selectedFrequency === 'monthly' ? 'Mensal' : 'Anual'}\n💵 **Valor:** ${currency} ${planPrice.toFixed(2)}\n\n✅ **Clique para finalizar o pagamento com segurança:**\n${checkoutUrl}`;
+        await this.sendMessage(phone, fallback);
+      }
       
     } catch (error) {
       this.logger.error('❌ Erro ao processar confirmação de pagamento:', error);
-      await this.sendMessage(phone, '❌ Erro ao processar pagamento. Tente novamente.');
+      const jurisdiction = this.resolveUpgradeJurisdiction(phone);
+      await this.sendMessage(phone, jurisdiction === 'ES' ? '❌ Error al procesar el pago. Inténtalo de nuevo.' : '❌ Erro ao processar pagamento. Tente novamente.');
     }
   }
 
@@ -3123,9 +2967,10 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
       const planAnalysis = await this.aiService.detectPlanFromMessage(userMessage);
       
       if (planAnalysis.planName) {
-        await this.processPlanSelection(phone, userId, userMessage);
+        await this.processPlanSelection(phone, userId, userMessage, context?.session);
       } else {
-        const plans = await this.getUpgradePlans();
+        const jurisdiction = context?.session?.jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+        const plans = await this.getUpgradePlans(jurisdiction);
         const planNames = plans.map(p => p.name).join(' ou ');
         await this.sendMessage(phone, `❓ Qual plano você gostaria? ${planNames}?`);
       }

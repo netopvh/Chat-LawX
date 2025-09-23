@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { StripeService } from '../stripe/stripe.service';
 import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
 import { Plan, CreatePlanDto, UpdatePlanDto } from './plans.interface';
@@ -10,9 +11,33 @@ export class PlansService {
 
   constructor(
     private readonly supabaseService: SupabaseService,
+    private readonly prismaService: PrismaService,
     private readonly stripeService: StripeService,
     private readonly jurisdictionService: JurisdictionService,
   ) {}
+
+  private mapPrismaPlanToInterface(p: any): Plan {
+    return {
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      monthly_price: p.monthlyPrice,
+      yearly_price: p.yearlyPrice,
+      consultation_limit: p.consultationLimit ?? null,
+      document_analysis_limit: p.documentAnalysisLimit ?? null,
+      message_limit: p.messageLimit ?? null,
+      is_unlimited: p.isUnlimited,
+      is_active: p.isActive,
+      jurisdiction: p.jurisdiction,
+      ddi: p.ddi,
+      stripe_price_id_monthly: p.stripePriceIdMonthly,
+      stripe_price_id_yearly: p.stripePriceIdYearly,
+      stripe_product_id: p.stripeProductId,
+      features: Array.isArray(p.features) ? p.features : [],
+      created_at: p.createdAt.toISOString(),
+      updated_at: p.updatedAt.toISOString(),
+    };
+  }
 
   async getAllPlans(jurisdiction?: string): Promise<Plan[]> {
     try {
@@ -41,12 +66,27 @@ export class PlansService {
 
   async getUpgradePlans(jurisdiction?: string): Promise<Plan[]> {
     try {
+      // Para PT/ES usar Prisma; BR usa Supabase
+      if (jurisdiction && jurisdiction !== 'BR') {
+        const plans = await (this.prismaService as any).plan.findMany({
+          where: {
+            isActive: true,
+            name: { not: 'Fremium' },
+            monthlyPrice: { gt: 0 },
+            jurisdiction,
+          },
+          orderBy: { monthlyPrice: 'asc' },
+        });
+        return plans.map((p: any) => this.mapPrismaPlanToInterface(p));
+      }
+
+      // Fallback Supabase (BR ou sem jurisdição)
       let query = this.supabaseService.getClient()
         .from('plans')
         .select('*')
         .eq('is_active', true)
-        .neq('name', 'Fremium') // Excluir plano Fremium
-        .gt('monthly_price', 0); // Apenas planos pagos
+        .neq('name', 'Fremium')
+        .gt('monthly_price', 0);
 
       if (jurisdiction) {
         query = query.eq('jurisdiction', jurisdiction);
@@ -88,6 +128,13 @@ export class PlansService {
 
   async getPlanByName(name: string): Promise<Plan> {
     try {
+      // Tentar via Prisma primeiro (PT/ES)
+      const prismaPlan = await (this.prismaService as any).plan.findFirst({
+        where: { name, isActive: true },
+      });
+      if (prismaPlan) return this.mapPrismaPlanToInterface(prismaPlan);
+
+      // Fallback Supabase
       const { data, error } = await this.supabaseService.getClient()
         .from('plans')
         .select('*')
@@ -100,7 +147,7 @@ export class PlansService {
         throw new Error(`Plano ${name} não encontrado`);
       }
 
-      return data;
+      return data as Plan;
     } catch (error) {
       this.logger.error('Erro no serviço de planos:', error);
       throw error;

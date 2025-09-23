@@ -1,12 +1,16 @@
 import { Controller, Post, Body, Headers, RawBody, Logger, BadRequestException } from '@nestjs/common';
 import { StripeService } from './stripe.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { StripeWebhookDto } from './dto/stripe-webhook.dto';
 
 @Controller('stripe')
 export class StripeController {
   private readonly logger = new Logger(StripeController.name);
 
-  constructor(private readonly stripeService: StripeService) {}
+  constructor(
+    private readonly stripeService: StripeService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   /**
    * Webhook endpoint para receber eventos do Stripe
@@ -91,7 +95,54 @@ export class StripeController {
     const subscription = event.data.object;
     this.logger.log(`Assinatura criada: ${subscription.id} para cliente ${subscription.customer}`);
     
-    // Ativar assinatura no sistema local
+    // Ativar assinatura no sistema local (Prisma)
+    const userId = subscription.metadata?.userId || subscription.metadata?.user_id;
+    const planName = subscription.metadata?.planName || subscription.metadata?.plan_name;
+    const jurisdiction = subscription.metadata?.jurisdiction || 'PT';
+
+    if (!userId || !planName) {
+      this.logger.warn('Webhook sem metadata userId/planName; ignorando criação local');
+      return;
+    }
+
+    const plan = await (this.prisma as any).plan.findFirst({ where: { name: planName, isActive: true } });
+    if (!plan) {
+      this.logger.warn(`Plano não encontrado no Prisma: ${planName}`);
+      return;
+    }
+
+    // Cancelar assinatura ativa anterior (se houver)
+    const prev = await this.prisma.findUserSubscription(userId);
+    if (prev) {
+      await (this.prisma as any).subscription.update({ where: { id: prev.id }, data: { status: 'cancelled', cancelledAt: new Date() } });
+    }
+
+    // Criar nova assinatura ativa
+    const now = new Date();
+    const periodEnd = new Date(now);
+    if (subscription.items?.data?.[0]?.price?.recurring?.interval === 'year') {
+      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+    } else {
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+    }
+
+    const created = await (this.prisma as any).subscription.create({
+      data: {
+        userId,
+        planId: plan.id,
+        status: 'active',
+        billingCycle: subscription.items?.data?.[0]?.price?.recurring?.interval === 'year' ? 'yearly' : 'monthly',
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+        stripeSubscriptionId: subscription.id,
+        stripeCustomerId: subscription.customer as string,
+        jurisdiction,
+        syncStatus: 'synced',
+      }
+    });
+
+    // Inicializar usage tracking
+    await this.prisma.findOrCreateUsageTracking(userId, created.id, now, periodEnd, jurisdiction);
   }
 
   /**
@@ -101,7 +152,17 @@ export class StripeController {
     const subscription = event.data.object;
     this.logger.log(`Assinatura atualizada: ${subscription.id} - Status: ${subscription.status}`);
     
-    // Atualizar status da assinatura no sistema local
+    const local = await (this.prisma as any).subscription.findFirst({ where: { stripeSubscriptionId: subscription.id } });
+    if (!local) return;
+    await (this.prisma as any).subscription.update({
+      where: { id: local.id },
+      data: {
+        status: subscription.status === 'active' ? 'active' : (subscription.status === 'past_due' ? 'past_due' : local.status),
+        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+        syncStatus: 'synced',
+        updatedAt: new Date(),
+      }
+    });
   }
 
   /**
@@ -111,7 +172,12 @@ export class StripeController {
     const subscription = event.data.object;
     this.logger.log(`Assinatura cancelada: ${subscription.id}`);
     
-    // Cancelar assinatura no sistema local
+    const local = await (this.prisma as any).subscription.findFirst({ where: { stripeSubscriptionId: subscription.id } });
+    if (!local) return;
+    await (this.prisma as any).subscription.update({
+      where: { id: local.id },
+      data: { status: 'cancelled', cancelledAt: new Date(), updatedAt: new Date() }
+    });
   }
 
   /**
@@ -141,6 +207,6 @@ export class StripeController {
     const session = event.data.object;
     this.logger.log(`Checkout completado: ${session.id} para cliente ${session.customer}`);
     
-    // Processar upgrade ou nova assinatura
+    // Nada aqui: a criação/ativação final é confirmada pelos eventos de subscription/invoice
   }
 }

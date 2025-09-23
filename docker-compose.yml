@@ -1,4 +1,17 @@
 services:
+  # app:
+  #   image: netopvh/lawx-chat:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3030:3030"
+  #   depends_on:
+  #     - mysql
+  #     - redis
+  #     - phpmyadmin
+  #   networks:
+  #     - chat_lawx_network
+  #   env_file:
+  #     - .env
   mysql:
     image: mysql:8.0
     container_name: chat_lawx_mysql

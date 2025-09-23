@@ -65,12 +65,8 @@ export class WhatsAppService {
     };
   }
 
-  // Array de números brasileiros para teste no fluxo ES
-  private readonly testNumbersForESFlow = [
-    '554892060485', // Número de teste 1
-    '558499869794', // Número de teste 2
-    '553288125754', // Número de teste 3
-  ];
+  // Array de números para forçar fluxo ES via variável de ambiente TEST_NUMBERS
+  private readonly testNumbersForESFlow: string[];
 
   constructor(
     private configService: ConfigService,
@@ -95,7 +91,24 @@ export class WhatsAppService {
     private documentProcessor: DocumentProcessor,
     private sessionService: SessionService,
     private upgradeFlowEngine: UpgradeFlowEngine,
-  ) {}
+  ) {
+    // Inicializar números de teste a partir da env TEST_NUMBERS (comma-separated)
+    this.testNumbersForESFlow = this.parseTestNumbersFromEnv();
+  }
+
+  private parseTestNumbersFromEnv(): string[] {
+    try {
+      const raw = this.configService.get<string>('TEST_NUMBERS');
+      if (!raw) return [];
+      return raw
+        .split(',')
+        .map((n) => n.trim())
+        .filter((n) => n.length > 0);
+    } catch (error) {
+      this.logger.warn('⚠️ Variável TEST_NUMBERS inválida. Usando lista vazia.');
+      return [];
+    }
+  }
 
   // Métodos auxiliares para buscar planos dinamicamente
   private async getAllActivePlans() {
@@ -1345,7 +1358,7 @@ Exemplo de estrutura:
           // await this.sendPlanOptionsAfterLimit(phone, jurisdiction.jurisdiction);
 
           // NOVO: Enviar landing page de upgrade por jurisdição (standby)
-          const landingUrl = jurisdiction.jurisdiction === 'ES' ? 'https://es.lawx.ai' : 'https://pt.lawx.ai';
+          const landingUrl = jurisdiction.jurisdiction === 'ES' ? 'https://es.lawx.ai/plans' : 'https://pt.lawx.ai/plans';
           const landingMsg = jurisdiction.jurisdiction === 'ES'
             ? `🚀 **Actualiza tu plan**\n\n` +
               `Para continuar, accede a nuestra página y elige el plan que prefieras:\n${landingUrl}\n\n` +

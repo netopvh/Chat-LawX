@@ -2138,6 +2138,7 @@ Jurisdição: ${getJurisdiction(jurisdiction)}
 Idioma: ${getJurisdictionLanguage(jurisdiction)}
 Uso atual: ${currentUsage} mensagens
 Limite: ${limit} mensagens
+Planos Disponíveis: ${this.getUpgradePlans(jurisdiction)}
 Você deve responder em ${getJurisdictionLanguage(jurisdiction)} de forma obrigatória.
 
 Mensagem a ser enviada:

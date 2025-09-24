@@ -1642,6 +1642,8 @@ Requisitos:
 - Incluir instruções de uso: Digite pergunta jurídica, Envie foto/documento para análise
 - Aviso: Este é um Assistente informativo, caso precise de uma consulta jurídica específica, consulte um advogado.
 
+A estrutura abaixo deve estar no idioma ${getJurisdictionLanguage(jurisdiction)}, nao precisa ser especificamente em portugues, pode ser em outro idioma.
+
 Estrutura:
 [Emoji] *[Chat LawX - Menu Jurídico]*
 *Funcionalidades Disponíveis:*

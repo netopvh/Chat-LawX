@@ -10,7 +10,7 @@ export class AIGateway implements IAIGateway {
 
   async executeCustomPrompt(
     prompt: string,
-    model: 'gpt-4o' | 'gpt-3.5-turbo' | 'gpt-4' | 'gemini-1.5-flash' | 'gemini-1.5-pro' = 'gpt-3.5-turbo',
+    model: 'gpt-4o' | 'gpt-4o-mini' | 'gpt-3.5-turbo' | 'gpt-4' | 'gemini-1.5-flash' | 'gemini-1.5-pro' = 'gpt-3.5-turbo',
     system: string = 'Você é um assistente útil.',
     temperature: number = 0.7,
     maxTokens: number = 300

@@ -150,7 +150,12 @@ export class AiService {
           
           // Converter buffer para FormData para envio à API
           const formData = new FormData();
-          const audioBlob = new Blob([audioBuffer], { type: format });
+          const arrayBuffer = audioBuffer.buffer.slice(
+            audioBuffer.byteOffset,
+            audioBuffer.byteOffset + audioBuffer.byteLength
+          );
+          const uint8 = new Uint8Array(arrayBuffer as ArrayBuffer);
+          const audioBlob = new Blob([uint8], { type: format });
           formData.append('file', audioBlob, `audio.${this.getFileExtension(format)}`);
           formData.append('model', 'whisper-1');
           formData.append('language', 'pt'); // Português brasileiro
@@ -1308,7 +1313,7 @@ Se não for nem confirmação nem negação clara, ambos devem ser false.`;
    */
   async executeCustomPrompt(
     prompt: string,
-    model: 'gpt-4o' | 'gpt-3.5-turbo' | 'gpt-4' | 'gemini-1.5-flash' | 'gemini-1.5-pro' = 'gpt-4o',
+    model: 'gpt-4o' | 'gpt-4o-mini' | 'gpt-3.5-turbo' | 'gpt-4' | 'gemini-1.5-flash' | 'gemini-1.5-pro' = 'gpt-4o',
     systemMessage?: string,
     temperature: number = 0.3,
     maxTokens?: number

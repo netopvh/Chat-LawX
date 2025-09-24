@@ -92,7 +92,7 @@ async function main() {
       jurisdiction: 'ES',
       ddi: '34',
       features: [
-        '200 consultas jurídicas por mes',
+        '200 consultas jurídicas',
         '40 análisis de documentos',
         'Soporte prioritario',
         'Respuestas en español',

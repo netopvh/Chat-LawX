@@ -440,7 +440,7 @@ Como posso te ajudar hoje?`;
 
         const welcomeMsg = await this.aiGateway.executeCustomPrompt(
           welcomePrompt,
-          'gpt-3.5-turbo',
+          'gpt-4o-mini',
           'Você é um especialista em criar mensagens de boas-vindas personalizadas para assistentes jurídicos. Seja profissional e útil.',
           0.7,
           300
@@ -478,7 +478,7 @@ Exemplo de estrutura:
 
       const welcomeMsg = await this.aiGateway.executeCustomPrompt(
         welcomePrompt,
-        'gpt-3.5-turbo',
+        'gpt-4o-mini',
         'Você é um especialista em criar mensagens de boas-vindas para assistentes jurídicos. Seja conciso e profissional.',
         0.7,
         300
@@ -895,8 +895,6 @@ Exemplo de estrutura:
         // Usuário tem sessão mas passou 1 hora - enviar mensagem de boas-vindas
         await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdiction.jurisdiction);
         // Continuar processamento normal após mensagem
-      } else {
-        this.logger.log(`✅ Usuário espanhol com sessão ativa: ${sessionResult.session.name}`);
       }
       
       // ✅ NOVO: Atualizar lastMessageSent para esta interação
@@ -982,7 +980,15 @@ Exemplo de estrutura:
         return;
       }
 
-      await this.sendMessageWithTyping(phone, '🔍 Estou analisando o documento jurídico...', 2000);
+      // Mensagem inicial conforme jurisdição
+      const imgJurisdiction = this.jurisdictionService.detectJurisdiction(phone);
+      let preImageMsg = '🔍 Estou analisando o documento jurídico...'; // BR (padrão)
+      if (imgJurisdiction.jurisdiction === 'PT') {
+        preImageMsg = '🔍 A analisar o documento jurídico...';
+      } else if (imgJurisdiction.jurisdiction === 'ES') {
+        preImageMsg = '🔍 Estoy analizando el documento jurídico...';
+      }
+      await this.sendMessageWithTyping(phone, preImageMsg, 2000);
       
       // Detectar jurisdição
       const jurisdiction = this.jurisdictionService.detectJurisdiction(phone);
@@ -1022,10 +1028,50 @@ Exemplo de estrutura:
     try {
       this.logger.log('📝 Processando mensagem de texto jurídica:', text);
 
-      // 0. Verificar se é comando "menu"
-      if (text.toLowerCase().trim() === 'menu') {
-        await this.showLegalMenu(phone, forcedJurisdiction || 'BR');
-        return;
+      // 0. Detectar intenção de acessar o menu via IA
+      try {
+        const menuDetectionPrompt = `
+Tarefa: Detectar se a mensagem do usuário indica intenção de abrir o menu.
+
+Responda EXCLUSIVAMENTE com JSON válido, sem markdown, sem texto adicional, sem comentários.
+
+Formato OBRIGATÓRIO (exato):
+{"isMenu": true|false}
+
+Critérios (PT-BR, PT-PT e ES, incluindo variações e acentos):
+- Palavras e expressões equivalentes a abrir/ver o menu: "menu", "menú", "mostrar menu", "ver menu", "menu por favor"
+- Termos relacionados a opções/ajuda: "opções", "opcoes", "opção", "opcao", "opciones", "ajuda", "help"
+- Perguntas ou comandos que implicam exibir opções do sistema
+
+Mensagem: "${text.trim()}"`;
+
+        const aiResponse = await this.aiService.executeCustomPrompt(
+          menuDetectionPrompt,
+          'gpt-4o-mini',
+          'Você é um classificador. Responda apenas JSON válido exatamente no formato {"isMenu": true|false}.',
+          0.1,
+        );
+
+        let parsed: any | null = null;
+        try {
+          parsed = aiResponse ? JSON.parse(aiResponse.trim()) : null;
+        } catch {
+          const jsonMatch = aiResponse && aiResponse.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            parsed = JSON.parse(jsonMatch[0]);
+          }
+        }
+
+        if (parsed && parsed.isMenu === true) {
+          await this.showLegalMenu(phone, forcedJurisdiction || 'BR');
+          return;
+        }
+      } catch (menuDetectErr) {
+        this.logger.warn('⚠️ Falha ao detectar intenção de menu via IA. Usando fallback simples.', menuDetectErr);
+        if (text.toLowerCase().trim() === 'menu') {
+          await this.showLegalMenu(phone, forcedJurisdiction || 'BR');
+          return;
+        }
       }
 
       // 0.1 Jurisdição detectada
@@ -1093,8 +1139,17 @@ Exemplo de estrutura:
       this.logger.log('🎵 Processando mensagem de áudio...');
 
       this.logger.log('🎵 Mensagem de áudio tipo:', JSON.stringify(message.message?.base64, null, 2));
-      // Enviar mensagem de processamento
-      await this.sendMessageWithTyping(phone, '🎵 Processando seu áudio... Aguarde um momento.', 2000);
+      // Enviar mensagem de processamento conforme jurisdição
+      const preJurisdiction = forcedJurisdiction 
+        ? { jurisdiction: forcedJurisdiction } 
+        : this.jurisdictionService.detectJurisdiction(phone);
+      let preAudioMsg = '🎵 Processando seu áudio... Aguarde um momento.'; // BR (padrão)
+      if (preJurisdiction.jurisdiction === 'PT') {
+        preAudioMsg = '🎵 A processar o seu áudio... Por favor, aguarde um momento.';
+      } else if (preJurisdiction.jurisdiction === 'ES') {
+        preAudioMsg = '🎵 Procesando tu audio... Por favor, espera un momento.';
+      }
+      await this.sendMessageWithTyping(phone, preAudioMsg, 2000);
       
       let audioBuffer: Buffer | null = null;
 
@@ -1472,10 +1527,10 @@ Exemplo de estrutura:
       // ✅ NOVO: Gerar menu localizado com IA
       const menuPrompt = `Gere uma mensagem de menu jurídico para o Chat LawX, um assistente jurídico especializado.
 
-Jurisdição: ${jurisdiction === 'ES' ? 'Espanha' : jurisdiction === 'PT' ? 'Portugal' : 'Brasil'}
-Idioma: ${jurisdiction === 'ES' ? 'Espanhol' : jurisdiction === 'PT' ? 'Português europeu' : 'Português brasileiro'}
+Jurisdição: ${getJurisdiction(jurisdiction)}
+Idioma: ${getJurisdictionLanguage(jurisdiction)}
 
-Use obrigatoriamente no idioma ${jurisdiction === 'ES' ? 'Espanhol' : jurisdiction === 'PT' ? 'Português europeu' : 'Português brasileiro'} para responder.
+Use obrigatoriamente no idioma ${getJurisdictionLanguage(jurisdiction)} para responder.
 
 Requisitos:
 - Deve mencionar obrigatoriamente "Chat LawX"
@@ -1497,7 +1552,7 @@ Estrutura:
 
       const localizedMenu = await this.aiGateway.executeCustomPrompt(
         menuPrompt,
-        'gpt-3.5-turbo',
+        'gpt-4o-mini',
         'Você é um especialista em criar menus jurídicos localizados para assistentes jurídicos. Seja profissional e útil.',
         0.7
       );
@@ -1979,31 +2034,21 @@ Estrutura:
     try {
       const prompt = `Gere uma mensagem de limite excedido para o Chat LawX, um assistente jurídico especializado.
 
-Jurisdição: ${jurisdiction === 'ES' ? 'Espanha' : 'Portugal'}
-Idioma: ${jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'}
+Jurisdição: ${getJurisdiction(jurisdiction)}
+Idioma: ${getJurisdictionLanguage(jurisdiction)}
 Uso atual: ${currentUsage} mensagens
 Limite: ${limit} mensagens
-Você deve responder em ${jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'} de forma obrigatória.
+Você deve responder em ${getJurisdictionLanguage(jurisdiction)} de forma obrigatória.
 
-Requisitos:
-- Deve mencionar obrigatoriamente "Chat LawX"
-- Deve informar que o limite de mensagens foi atingido
-- Deve mostrar o uso atual e o limite (${currentUsage}/${limit})
-- Deve sugerir opções para o usuário
-- Tom profissional e útil
-- Máximo 6 linhas
-- Use emojis apropriados
-- Inclua informações sobre upgrade de plano
+Mensagem a ser enviada:
 
-Exemplo de estrutura:
-[Emoji] [Aviso sobre limite atingido]
-[Informação sobre uso atual]
-[Opções disponíveis]
-[Informação sobre upgrade]`;
+Ops, seu limite de mensagens gratuita foi excedido! 😅
+
+Mas você pode escolher um de nossos planos para continuar:`;
 
       const message = await this.aiGateway.executeCustomPrompt(
         prompt,
-        'gpt-3.5-turbo',
+        'gpt-4o-mini',
         'Você é um especialista em criar mensagens de limite excedido para assistentes jurídicos. Seja claro e ofereça soluções.',
         0.7,
         400
@@ -2912,8 +2957,8 @@ Aguarde um momento enquanto preparamos seu pagamento... ⏳`;
           : '';
         const prompt = `Gere uma mensagem de confirmação de pagamento para o Chat LawX (assistente jurídico) com tom profissional e claro.
 
-Idioma: ${isES ? 'Espanhol' : 'Português europeu'}
-Jurisdição: ${jurisdiction === 'ES' ? 'Espanha' : 'Portugal'}
+Idioma: ${getJurisdictionLanguage(jurisdiction)}
+Jurisdição: ${getJurisdiction(jurisdiction)}
 
 Informações obrigatórias a incluir (formate com negrito nos títulos e bullets quando fizer sentido):
 - Plano: ${context.selectedPlan}
@@ -2931,7 +2976,7 @@ Regras de saída:
 
         const aiMsg = await this.aiGateway.executeCustomPrompt(
           prompt,
-          'gpt-3.5-turbo',
+          'gpt-4o-mini',
           'Você é um redator que prepara mensagens curtas e claras de confirmação de pagamento, mantendo apenas fatos fornecidos.',
           0.4,
           450

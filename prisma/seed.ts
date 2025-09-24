@@ -30,10 +30,12 @@ async function main() {
       ]
     },
     {
-      name: 'Pro',
+      name: 'Premium',
       description: 'Plano profissional para advogados e empresas',
       monthlyPrice: 29.90,
       yearlyPrice: 299.00,
+      stripePriceIdYearly: 'price_1S8PFM2K49yaeqAQjtjpirGK',
+      stripePriceIdMonthly: 'price_1S8PEU2K49yaeqAQ4Dy91w97',
       consultationLimit: 50,
       documentAnalysisLimit: 20,
       messageLimit: 100,
@@ -51,30 +53,6 @@ async function main() {
         'Pareceres jurídicos'
       ]
     },
-    {
-      name: 'Premium',
-      description: 'Plano premium com recursos ilimitados',
-      monthlyPrice: 59.90,
-      yearlyPrice: 599.00,
-      consultationLimit: null,
-      documentAnalysisLimit: null,
-      messageLimit: null,
-      isUnlimited: true,
-      isActive: true,
-      jurisdiction: 'PT',
-      ddi: '351',
-      features: [
-        'Consultas jurídicas ilimitadas',
-        'Análises de documentos ilimitadas',
-        'Mensagens ilimitadas',
-        'Suporte 24/7',
-        'Respostas em português de Portugal',
-        'Análise de contratos avançada',
-        'Pareceres jurídicos detalhados',
-        'Acesso a jurisprudência',
-        'Relatórios personalizados'
-      ]
-    }
   ];
 
   // Planos para Espanha (DDI 34)
@@ -99,10 +77,12 @@ async function main() {
       ]
     },
     {
-      name: 'Pro',
+      name: 'Premium',
       description: 'Plan profesional para abogados y empresas',
-      monthlyPrice: 29.90,
-      yearlyPrice: 299.00,
+      monthlyPrice: 29.00,
+      yearlyPrice: 290.00,
+      stripePriceIdYearly: 'price_1S8PFM2K49yaeqAQjtjpirGK',
+      stripePriceIdMonthly: 'price_1S8PEU2K49yaeqAQ4Dy91w97',
       consultationLimit: 50,
       documentAnalysisLimit: 20,
       messageLimit: 100,
@@ -118,30 +98,6 @@ async function main() {
         'Respuestas en español',
         'Análisis de contratos',
         'Dictámenes jurídicos'
-      ]
-    },
-    {
-      name: 'Premium',
-      description: 'Plan premium con recursos ilimitados',
-      monthlyPrice: 59.90,
-      yearlyPrice: 599.00,
-      consultationLimit: null,
-      documentAnalysisLimit: null,
-      messageLimit: null,
-      isUnlimited: true,
-      isActive: true,
-      jurisdiction: 'ES',
-      ddi: '34',
-      features: [
-        'Consultas jurídicas ilimitadas',
-        'Análisis de documentos ilimitados',
-        'Mensajes ilimitados',
-        'Soporte 24/7',
-        'Respuestas en español',
-        'Análisis de contratos avanzada',
-        'Dictámenes jurídicos detallados',
-        'Acceso a jurisprudencia',
-        'Informes personalizados'
       ]
     }
   ];

@@ -16,6 +16,7 @@ import { JurisdictionModule } from './modules/jurisdiction/jurisdiction.module';
 import { TeamsModule } from './modules/teams/teams.module';
 import { LegalPromptsModule } from './modules/legal-prompts/legal-prompts.module';
 import { AnalysisTimeoutModule } from './modules/analysis-timeout/analysis-timeout.module';
+import { ExternalModule } from './modules/external/external.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { AnalysisTimeoutModule } from './modules/analysis-timeout/analysis-timeo
     SubscriptionsModule,
     UpgradeSessionsModule,
     AnalysisTimeoutModule,
+    ExternalModule,
   ],
 })
 export class AppModule {} 

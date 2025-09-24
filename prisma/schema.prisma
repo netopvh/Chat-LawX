@@ -53,29 +53,10 @@ model LegalPrompt {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
-  conversations Conversation[]
-  
   @@unique([jurisdiction, name])
   @@map("legal_prompts")
 }
 
-model Conversation {
-  id                    String   @id @default(cuid())
-  userId                String
-  promptId              String
-  previousResponseId    String?
-  openaiThreadId        String?
-  openaiResponseId      String?
-  messages              Json     // Array de mensagens da conversa
-  jurisdiction          String
-  status                String   @default("active") // active, completed, archived
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  prompt LegalPrompt @relation(fields: [promptId], references: [id])
-  
-  @@map("conversations")
-}
 
 model Plan {
   id                    String   @id @default(cuid())
@@ -208,11 +189,20 @@ model WhatsAppMessage {
   phone         String
   messageType   String   // text, document, image, audio
   content       String?  @db.Text
+  contentUrl    String?
+  contentJson   Json?
   direction     String   // inbound, outbound
+  role          String   // user, assistant, system, tool
+  model         String?
+  tokenCount    Int?
+  replyToId     String?
   jurisdiction  String
   createdAt     DateTime @default(now())
   
   session       WhatsAppSession @relation(fields: [sessionId], references: [id])
   
+  @@index([sessionId, createdAt])
+  @@index([phone, createdAt])
+  @@index([jurisdiction, createdAt])
   @@map("whatsapp_messages")
 }

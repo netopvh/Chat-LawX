@@ -102,13 +102,6 @@ export class AiService {
     }
   }
 
-
-
-
-
-
-
-
   /**
    * Transcreve áudio usando OpenAI Whisper API
    * @param audioBuffer Buffer do arquivo de áudio
@@ -794,18 +787,11 @@ ${context.documentContent ? `\nCONTEÚDO DO DOCUMENTO: ${context.documentContent
 
 Por favor, responda à consulta do usuário de forma precisa e útil, seguindo as diretrizes estabelecidas acima.`;
 
-      // Gerar resposta com IA
       const completion = await this.openai.chat.completions.create({
         model: 'gpt-4o',
         messages: [
-          {
-            role: 'system',
-            content: `Você é um assistente jurídico especializado em ${jurisdiction}. Seja preciso, profissional e útil.`
-          },
-          {
-            role: 'user',
-            content: processedPrompt
-          }
+          { role: 'system', content: `Você é um assistente jurídico especializado em ${jurisdiction}. Seja preciso, profissional e útil.` },
+          { role: 'user', content: processedPrompt },
         ],
         temperature: 0.3,
       });

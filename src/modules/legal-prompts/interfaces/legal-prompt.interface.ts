@@ -31,43 +31,6 @@ export interface LegalPromptQueryOptions {
   offset?: number;
 }
 
-export interface ConversationMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-  timestamp: Date;
-}
-
-export interface Conversation {
-  id: string;
-  userId: string;
-  promptId: string;
-  previousResponseId?: string;
-  openaiThreadId?: string;
-  openaiResponseId?: string;
-  messages: ConversationMessage[];
-  jurisdiction: string;
-  status: 'active' | 'completed' | 'archived';
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface CreateConversationDto {
-  userId: string;
-  promptId: string;
-  previousResponseId?: string;
-  openaiThreadId?: string;
-  jurisdiction: string;
-  initialMessage?: ConversationMessage;
-}
-
-export interface UpdateConversationDto {
-  previousResponseId?: string;
-  openaiThreadId?: string;
-  openaiResponseId?: string;
-  messages?: ConversationMessage[];
-  status?: 'active' | 'completed' | 'archived';
-}
-
 export interface OpenAIResponse {
   id: string;
   object: string;

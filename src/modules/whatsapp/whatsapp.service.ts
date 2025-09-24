@@ -21,6 +21,8 @@ import { CONVERSATION_STATE_STORE, IConversationStateStore } from './interfaces/
 import { MediaDownloader } from './services/media/media-downloader';
 import { AudioProcessor } from './services/media/audio-processor';
 import { DocumentProcessor } from './services/media/document-processor';
+import { MessagingLogService } from './services/logging/messaging-log.service';
+import { ContextBuilderService } from './services/logging/context-builder.service';
 import { SessionService } from './services/session/session.service';
 import { UpgradeFlowEngine } from './services/upgrade/upgrade-flow.engine';
 import { getJurisdiction, getJurisdictionLanguage } from '@/common/utils/jurisdiction';
@@ -92,6 +94,8 @@ export class WhatsAppService {
     private documentProcessor: DocumentProcessor,
     private sessionService: SessionService,
     private upgradeFlowEngine: UpgradeFlowEngine,
+    private messagingLog: MessagingLogService,
+    private contextBuilder: ContextBuilderService,
   ) {
     // Inicializar números de teste a partir da env TEST_NUMBERS (comma-separated)
     this.testNumbersForESFlow = this.parseTestNumbersFromEnv();
@@ -980,6 +984,15 @@ Exemplo de estrutura:
         return;
       }
 
+      // Log inbound media
+      const session = await this.sessionService.checkWhatsAppSession(phone, this.jurisdictionService.detectJurisdiction(phone).jurisdiction);
+      const sessionId = session.session?.id;
+      const jurisdictionCode = this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+      if (sessionId) {
+        // Supondo que downloadImage salve e retorne URL quando aplicável; se não, pode-se anexar via contentJson base64
+        await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'image', url: 'uploaded://image' });
+      }
+
       // Mensagem inicial conforme jurisdição
       const imgJurisdiction = this.jurisdictionService.detectJurisdiction(phone);
       let preImageMsg = '🔍 Estou analisando o documento jurídico...'; // BR (padrão)
@@ -999,6 +1012,17 @@ Exemplo de estrutura:
         jurisdiction.jurisdiction,
         user?.id
       );
+      // Persistir resultado estruturado da análise no histórico para suportar perguntas futuras
+      if (sessionId && analysis) {
+        await this.messagingLog.logOutboundText({
+          sessionId,
+          phone,
+          jurisdiction: jurisdiction.jurisdiction,
+          text: '[analysis]',
+          role: 'assistant',
+          json: analysis,
+        });
+      }
       
       // Salvar documento no banco de dados apropriado
       await this.saveLegalDocument(analysis, jurisdiction.jurisdiction, user?.id);
@@ -1012,6 +1036,9 @@ Exemplo de estrutura:
         `⚠️ *Esta análise é informativa. Para casos específicos, consulte um advogado.*`;
       
       await this.sendMessage(phone, response);
+      if (sessionId) {
+        await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant' });
+      }
 
       // Incrementar contador de análises de documentos
       if (user?.id) {
@@ -1125,7 +1152,17 @@ Mensagem: "${text.trim()}"`;
         }
       }
 
-      // 3. Processar consulta jurídica
+      // 3. Log inbound texto
+      try {
+        const check = await this.sessionService.checkWhatsAppSession(phone, (forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction));
+        const sessionId = check.session?.id;
+        const jurisdiction = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+        if (sessionId) {
+          await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction, text });
+        }
+      } catch {}
+
+      // 4. Processar consulta jurídica
       await this.handleLegalConsultation(text, phone, user, forcedJurisdiction);
 
     } catch (error) {
@@ -1170,9 +1207,20 @@ Mensagem: "${text.trim()}"`;
       // Normalizar/converter áudio e upload
       const normalizedBuffer = await this.audioProcessor.convertToMp3WithFallback(audioBuffer);
       const audioUrl = await this.audioProcessor.uploadAudio(normalizedBuffer, 'audio.mp3');
+
+      // Log inbound media
+      const session = await this.sessionService.checkWhatsAppSession(phone, (forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction));
+      const sessionId = session.session?.id;
+      const jurisdictionCode = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+      if (sessionId) {
+        await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl });
+      }
       
       // Processar áudio para consulta jurídica
       const transcribedText = await this.audioProcessor.transcribe(normalizedBuffer);
+      if (sessionId && transcribedText) {
+        await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction: jurisdictionCode, text: transcribedText });
+      }
       
       // Usar jurisdição forçada se fornecida, senão detectar
       const jurisdiction = forcedJurisdiction 
@@ -1189,6 +1237,9 @@ Mensagem: "${text.trim()}"`;
       );
       
       await this.sendMessage(phone, response);
+      if (sessionId && response) {
+        await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant' });
+      }
       
     } catch (error) {
       this.logger.error('❌ Erro ao processar áudio:', error);
@@ -1280,6 +1331,16 @@ Mensagem: "${text.trim()}"`;
       // Upload para Supabase Storage
       const fileUrl = await this.documentProcessor.upload(documentBuffer, fileName);
 
+      // 🔎 Persistir inbound documento no histórico
+      try {
+        const jCode = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+        const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
+        const sId = sessionCheck.session?.id;
+        if (sId) {
+          await this.messagingLog.logInboundMedia({ sessionId: sId, phone, jurisdiction: jCode, messageType: 'document', url: fileUrl });
+        }
+      } catch {}
+
       // ✅ NOVO: Enviar para endpoint de análise com jurisdição
       const analysis = await this.documentProcessor.analyzeDocumentWithExternalAPI(fileUrl, forcedJurisdiction);
 
@@ -1288,6 +1349,16 @@ Mensagem: "${text.trim()}"`;
 
       // Enviar resposta para usuário
       await this.sendMessageWithTyping(phone, formattedAnalysis, 1500);
+
+      // 💬 Persistir outbound formattedAnalysis no histórico
+      try {
+        const jCode = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+        const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
+        const sId = sessionCheck.session?.id;
+        if (sId) {
+          await this.messagingLog.logOutboundText({ sessionId: sId, phone, jurisdiction: jCode, text: formattedAnalysis, role: 'assistant' });
+        }
+      } catch {}
       
       // ✅ NOVO: Incrementar contador de análise de documentos
       if (user?.id) {
@@ -1353,9 +1424,31 @@ Mensagem: "${text.trim()}"`;
         ? { jurisdiction: forcedJurisdiction }
         : this.jurisdictionService.detectJurisdiction(phone);
       
+      // Construir contexto curto (4+4) a partir do histórico persistido
+      let finalText = text;
+      try {
+        const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
+        const sessionId = check.session?.id;
+        if (sessionId) {
+          const ctx = await this.contextBuilder.buildConversationContext({
+            sessionId,
+            phone,
+            jurisdiction: jurisdiction.jurisdiction,
+            userLimit: 4,
+            assistantLimit: 4,
+          });
+          if (ctx && ctx.length > 0) {
+            const history = ctx
+              .map(m => `${m.role === 'user' ? 'Usuário' : 'Assistente'}: ${m.content}`)
+              .join('\n');
+            finalText = `HISTÓRICO (últimas trocas):\n${history}\n\nNOVA MENSAGEM DO USUÁRIO:\n${text}`;
+          }
+        }
+      } catch {}
+
       // Gerar resposta jurídica
       const response = await this.aiService.generateLegalResponse(
-        text,
+        finalText,
         phone,
         user?.id,
         undefined, // Sem conteúdo de documento
@@ -1363,6 +1456,13 @@ Mensagem: "${text.trim()}"`;
       );
       
       await this.sendMessageWithTyping(phone, response, 2000);
+      try {
+        const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
+        const sessionId = check.session?.id;
+        if (sessionId && response) {
+          await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant' });
+        }
+      } catch {}
       
     } catch (error) {
       this.logger.error('Erro ao processar consulta jurídica:', error);

@@ -29,6 +29,8 @@ import { IberiaSessionRepository } from './services/session/iberia-session.repos
 import { SessionService } from './services/session/session.service';
 import { UpgradeFlowEngine } from './services/upgrade/upgrade-flow.engine';
 import { HttpClientService } from './services/clients/http.client';
+import { MessagingLogService } from './services/logging/messaging-log.service';
+import { ContextBuilderService } from './services/logging/context-builder.service';
 
 @Module({
   imports: [
@@ -63,6 +65,8 @@ import { HttpClientService } from './services/clients/http.client';
     SessionService,
     UpgradeFlowEngine,
     HttpClientService,
+    MessagingLogService,
+    ContextBuilderService,
   ],
   exports: [
     WhatsAppService, 

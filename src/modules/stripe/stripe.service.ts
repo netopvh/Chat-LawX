@@ -185,6 +185,7 @@ export class StripeService {
   async createSimpleCheckoutSession(data: {
     priceId: string;
     customerEmail?: string;
+    successUrl?: string;
     metadata?: Record<string, string>;
   }): Promise<string> {
     try {
@@ -197,9 +198,10 @@ export class StripeService {
             quantity: 1,
           },
         ],
+        allow_promotion_codes: true,
         mode: 'subscription',
-        success_url: `${this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000'}/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000'}/cancel`,
+        success_url: data.successUrl,
+        cancel_url: `${this.configService.get<string>('FRONTEND_URL') || 'https://es.lawx.ai'}`,
         metadata: data.metadata,
       });
 

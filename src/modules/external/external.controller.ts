@@ -53,7 +53,7 @@ export class ExternalController {
   @UseGuards(ExternalTokenGuard)
   @Post('checkout-session')
   async createCheckoutSession(@Body() dto: CreateCheckoutSessionDto) {
-    const { phone, email, plan_id, interval, jurisdiction: forcedJurisdiction } = dto;
+    const { phone, email, plan_id, interval, jurisdiction: forcedJurisdiction, success_url } = dto;
 
     // Validar plano
     const plan = await this.plansService.getPlanById(plan_id);
@@ -81,6 +81,7 @@ export class ExternalController {
     const checkoutUrl = await this.stripeService.createSimpleCheckoutSession({
       priceId: priceId,
       customerEmail: email,
+      successUrl: success_url,
       metadata: {
         userId: user.id,
         planName: plan.name,

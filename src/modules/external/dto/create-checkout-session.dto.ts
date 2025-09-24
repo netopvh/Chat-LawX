@@ -24,6 +24,11 @@ export class CreateCheckoutSessionDto {
   @IsOptional()
   @IsString()
   jurisdiction?: string;
+
+  @ApiProperty({ required: false, description: 'URL de Sucesso' })
+  @IsOptional()
+  @IsString()
+  success_url?: string;
 }
 
 

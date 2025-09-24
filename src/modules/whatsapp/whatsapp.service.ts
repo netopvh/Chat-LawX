@@ -23,6 +23,7 @@ import { AudioProcessor } from './services/media/audio-processor';
 import { DocumentProcessor } from './services/media/document-processor';
 import { SessionService } from './services/session/session.service';
 import { UpgradeFlowEngine } from './services/upgrade/upgrade-flow.engine';
+import { getJurisdiction, getJurisdictionLanguage } from '@/common/utils/jurisdiction';
 
 interface ConversationState {
   isWaitingForName: boolean;
@@ -418,25 +419,24 @@ export class WhatsAppService {
         const welcomePrompt = `Gere uma mensagem de boas-vindas personalizada para o Chat LawX, um assistente jurídico especializado.
 
 Nome do usuário: ${text}
-Jurisdição: ${jurisdiction.jurisdiction === 'ES' ? 'Espanha' : 'Portugal'}
-Idioma: ${jurisdiction.jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'}
+Jurisdição: ${getJurisdiction(jurisdiction.jurisdiction)}
+Idioma: ${getJurisdictionLanguage(jurisdiction.jurisdiction)}
 
-Use obrigatoriamente no idioma ${jurisdiction.jurisdiction === 'ES' ? 'Espanhol' : 'Português europeu'} para responder.
+Use obrigatoriamente no idioma ${getJurisdictionLanguage(jurisdiction.jurisdiction)} para responder.
 
-Requisitos:
-- Deve mencionar obrigatoriamente "Chat LawX"
-- Deve especificar que é um assistente jurídico
-- Tom profissional e menos informal (usuário já autenticado)
-- Deve personalizar com o nome do usuário: ${text}
-- Máximo 5 linhas
-- Use emojis apropriados
-- Funcionalidades: Fazer perguntas sobre direito em texto ou audio, Enviar documentos em PDF/DOCX ou imagem para análise.
+Estrutura a ser usada na resposta:
 
-Exemplo de estrutura:
-[Emoji] [Saudação personalizada] ${text}, [Chat LawX]!
-Sou teu assistente jurídico especializado
-[Emoji] [Funcionalidades disponíveis]
-Fazer uma pergunta formal desejando o que deseja fazer hoje.`;
+Olá, ${text}!
+
+Você pode falar comigo por áudio ou por texto!
+
+Algumas das minhas funcionalidades:
+
+✅ Responder dúvidas jurídicas
+✅ Análise de documentos PDF/DOCX
+✅ Análise de imagens
+
+Como posso te ajudar hoje?`;
 
         const welcomeMsg = await this.aiGateway.executeCustomPrompt(
           welcomePrompt,

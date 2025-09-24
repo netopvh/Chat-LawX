@@ -33,7 +33,7 @@ async function main() {
       name: 'Premium',
       description: 'Plano profissional para advogados e empresas',
       monthlyPrice: 29.90,
-      yearlyPrice: 299.00,
+      yearlyPrice: 174.00,
       stripePriceIdYearly: 'price_1S8PFM2K49yaeqAQjtjpirGK',
       stripePriceIdMonthly: 'price_1S8PEU2K49yaeqAQ4Dy91w97',
       consultationLimit: 50,
@@ -44,12 +44,13 @@ async function main() {
       jurisdiction: 'PT',
       ddi: '351',
       features: [
-        '50 consultas jurídicas por mês',
-        '20 análises de documentos',
+        '200 consultas jurídicas por mês',
+        '40 análises de documentos',
         '100 mensagens por mês',
         'Suporte prioritário',
         'Respostas em português de Portugal',
-        'Análise de contratos',
+        'Análise de documentos PDF/DOCX',
+        'Análise de imagens',
         'Pareceres jurídicos'
       ]
     },
@@ -79,8 +80,8 @@ async function main() {
     {
       name: 'Premium',
       description: 'Plan profesional para abogados y empresas',
-      monthlyPrice: 29.00,
-      yearlyPrice: 290.00,
+      monthlyPrice: 29.90,
+      yearlyPrice: 174.00,
       stripePriceIdYearly: 'price_1S8PFM2K49yaeqAQjtjpirGK',
       stripePriceIdMonthly: 'price_1S8PEU2K49yaeqAQ4Dy91w97',
       consultationLimit: 50,
@@ -91,13 +92,13 @@ async function main() {
       jurisdiction: 'ES',
       ddi: '34',
       features: [
-        '50 consultas jurídicas por mes',
-        '20 análisis de documentos',
-        '100 mensajes por mes',
+        '200 consultas jurídicas por mes',
+        '40 análisis de documentos',
         'Soporte prioritario',
         'Respuestas en español',
-        'Análisis de contratos',
-        'Dictámenes jurídicos'
+        'Análisis de documentos PDF/DOCX',
+        'Análisis de Imágenes',
+        'Dictámenes jurídicos',
       ]
     }
   ];

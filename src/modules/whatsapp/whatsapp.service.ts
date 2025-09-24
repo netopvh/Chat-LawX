@@ -2138,14 +2138,16 @@ Jurisdição: ${getJurisdiction(jurisdiction)}
 Idioma: ${getJurisdictionLanguage(jurisdiction)}
 Uso atual: ${currentUsage} mensagens
 Limite: ${limit} mensagens
-Planos Disponíveis: ${this.getUpgradePlans(jurisdiction)}
+Planos Disponíveis: ${(await this.getUpgradePlans(jurisdiction)).map(plan => `${plan.name} - ${plan.monthly_price}€/mês\n\n: ${plan.features.join(', ')}`)}
 Você deve responder em ${getJurisdictionLanguage(jurisdiction)} de forma obrigatória.
 
 Mensagem a ser enviada:
 
 Ops, seu limite de mensagens gratuita foi excedido! 😅
 
-Mas você pode escolher um de nossos planos para continuar:`;
+Mas você pode escolher um de nossos planos para continuar:
+Listar Planos Disponíveis
+`;
 
       const message = await this.aiGateway.executeCustomPrompt(
         prompt,

@@ -14,10 +14,13 @@ import { TeamsModule } from '../teams/teams.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { WhatsAppClient } from './services/clients/whatsapp.client';
+import { CloudWhatsAppClient } from './services/clients/whatsapp.cloud.client';
 import { AIGateway } from './services/clients/ai.gateway';
 import { CONVERSATION_STATE_STORE } from './interfaces/conversation-state-store.interface';
 import { InMemoryConversationStateStore } from './services/state/in-memory.conversation-state.store';
 import { MediaDownloader } from './services/media/media-downloader';
+import { CloudMediaService } from './services/media/cloud-media.service';
+import { WebhookSecurityService } from './services/security/webhook-security.service';
 import { AudioProcessor } from './services/media/audio-processor';
 import { DocumentProcessor } from './services/media/document-processor';
 import { JurisdictionRouter } from './app/jurisdiction.router';
@@ -51,9 +54,11 @@ import { ContextBuilderService } from './services/logging/context-builder.servic
   providers: [
     WhatsAppService, 
     WhatsAppClient, 
+    CloudWhatsAppClient,
     AIGateway,
     { provide: CONVERSATION_STATE_STORE, useClass: InMemoryConversationStateStore },
     MediaDownloader,
+    CloudMediaService,
     AudioProcessor,
     DocumentProcessor,
     JurisdictionRouter,
@@ -67,6 +72,7 @@ import { ContextBuilderService } from './services/logging/context-builder.servic
     HttpClientService,
     MessagingLogService,
     ContextBuilderService,
+    WebhookSecurityService,
   ],
   exports: [
     WhatsAppService, 

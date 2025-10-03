@@ -20,7 +20,7 @@ export class ExternalController {
   }
 
   // Array de números para forçar fluxo ES via variável de ambiente TEST_NUMBERS
-  private readonly testNumbersForESFlow: string[] = [];
+  private testNumbersForESFlow: string[] = [];
 
   private parseTestNumbersFromEnv(): string[] {
     try {
@@ -29,6 +29,8 @@ export class ExternalController {
       return raw
         .split(',')
         .map((n) => n.trim())
+        .map((n) => n.replace(/\D/g, ''))
+        .map((n) => n.replace(/^0+/, ''))
         .filter((n) => n.length > 0);
     } catch (error) {
       return [];
@@ -92,14 +94,13 @@ export class ExternalController {
       : this.jurisdictionService.detectJurisdiction(phone);
 
     // Forçar ES para números de teste configurados em TEST_NUMBERS
-    const cleanPhone = (phone || '').replace(/\D/g, '');
+    const cleanPhone = (phone || '').replace(/\D/g, '').replace(/^0+/, '');
     if (this.testNumbersForESFlow.includes(cleanPhone)) {
       jurisdictionInfo = { ...jurisdictionInfo, jurisdiction: 'ES', isForced: true } as any;
     }
 
     console.log('jurisdictionInfo', jurisdictionInfo);
     console.log('phone', phone);
-    console.log('forcedJurisdiction', forcedJurisdiction);
     console.log('email', email);
     console.log('plan', plan);
     console.log('interval', interval);

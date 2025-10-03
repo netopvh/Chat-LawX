@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { StripeService } from '../stripe/stripe.service';
 import { JurisdictionService } from '../jurisdiction/jurisdiction.service';
 import { Subscription, CreateSubscriptionDto, UpdateSubscriptionDto, SubscriptionWithPlan } from './subscriptions.interface';
@@ -9,44 +9,99 @@ export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
 
   constructor(
-    private readonly supabaseService: SupabaseService,
+    private readonly prismaService: PrismaService,
     private readonly stripeService: StripeService,
     private readonly jurisdictionService: JurisdictionService,
   ) {}
 
+  private mapPrismaSubscriptionToInterface(s: any, plan?: any): Subscription | SubscriptionWithPlan {
+    const base: Subscription = {
+      id: s.id,
+      user_id: s.userId,
+      plan_id: s.planId,
+      status: s.status,
+      billing_cycle: s.billingCycle,
+      current_period_start: s.currentPeriodStart.toISOString(),
+      current_period_end: s.currentPeriodEnd.toISOString(),
+      cancelled_at: s.cancelledAt ? s.cancelledAt.toISOString() : null,
+      stripe_subscription_id: s.stripeSubscriptionId ?? undefined,
+      stripe_customer_id: s.stripeCustomerId ?? undefined,
+      last_sync_at: s.lastSyncAt ? s.lastSyncAt.toISOString() : undefined,
+      sync_status: s.syncStatus,
+      stripe_webhook_events: Array.isArray(s.stripeWebhookEvents) ? s.stripeWebhookEvents : undefined,
+      jurisdiction: s.jurisdiction ?? undefined,
+      created_at: s.createdAt.toISOString(),
+      updated_at: s.updatedAt.toISOString(),
+    };
+
+    if (plan) {
+      return {
+        ...(base as Subscription),
+        plan: {
+          id: plan.id,
+          name: plan.name,
+          description: plan.description,
+          monthly_price: plan.monthlyPrice,
+          yearly_price: plan.yearlyPrice,
+          consultation_limit: plan.consultationLimit ?? null,
+          document_analysis_limit: plan.documentAnalysisLimit ?? null,
+          message_limit: plan.messageLimit ?? null,
+          is_unlimited: plan.isUnlimited,
+          jurisdiction: plan.jurisdiction,
+          ddi: plan.ddi,
+          stripe_product_id: plan.stripeProductId ?? undefined,
+          stripe_price_id_monthly: plan.stripePriceIdMonthly ?? undefined,
+          stripe_price_id_yearly: plan.stripePriceIdYearly ?? undefined,
+          features: Array.isArray(plan.features) ? plan.features : [],
+        },
+      } as SubscriptionWithPlan;
+    }
+
+    return base;
+  }
+
+  private mapCreateDtoToPrismaData(dto: CreateSubscriptionDto): any {
+    return {
+      userId: dto.user_id,
+      planId: dto.plan_id,
+      status: dto.status || 'active',
+      billingCycle: dto.billing_cycle,
+      currentPeriodStart: new Date(),
+      currentPeriodEnd: (() => {
+        const now = new Date();
+        return dto.billing_cycle === 'monthly'
+          ? new Date(now.getFullYear(), now.getMonth() + 1, now.getDate())
+          : new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+      })(),
+      stripeSubscriptionId: dto.stripe_subscription_id,
+      stripeCustomerId: dto.stripe_customer_id,
+      jurisdiction: dto.jurisdiction,
+      syncStatus: 'synced',
+      lastSyncAt: new Date(),
+    };
+  }
+
+  private mapUpdateDtoToPrismaData(dto: UpdateSubscriptionDto): any {
+    const data = {
+      status: dto.status,
+      currentPeriodEnd: dto.current_period_end ? new Date(dto.current_period_end) : undefined,
+      cancelledAt: dto.cancelled_at ? new Date(dto.cancelled_at) : undefined,
+      stripeSubscriptionId: dto.stripe_subscription_id,
+      stripeCustomerId: dto.stripe_customer_id,
+      lastSyncAt: dto.last_sync_at ? new Date(dto.last_sync_at) : undefined,
+      syncStatus: dto.sync_status,
+      stripeWebhookEvents: dto.stripe_webhook_events,
+    } as Record<string, any>;
+    Object.keys(data).forEach((k) => data[k] === undefined && delete data[k]);
+    return data;
+  }
+
   async createSubscription(createSubscriptionDto: CreateSubscriptionDto): Promise<Subscription> {
     try {
-      // Calcular período da assinatura
-      const now = new Date();
-      const periodStart = now.toISOString();
-      
-      let periodEnd: Date;
-      if (createSubscriptionDto.billing_cycle === 'monthly') {
-        periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
-      } else {
-        periodEnd = new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
-      }
-
-      const subscriptionData = {
-        ...createSubscriptionDto,
-        current_period_start: periodStart,
-        current_period_end: periodEnd.toISOString(),
-        status: createSubscriptionDto.status || 'active'
-      };
-
-      const { data, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .insert(subscriptionData)
-        .select()
-        .single();
-
-      if (error) {
-        this.logger.error('Erro ao criar assinatura:', error);
-        throw new Error('Erro ao criar assinatura');
-      }
-
+      const dataToCreate = this.mapCreateDtoToPrismaData(createSubscriptionDto);
+      const created = await (this.prismaService as any).subscription.create({ data: dataToCreate });
       this.logger.log(`Assinatura criada para usuário ${createSubscriptionDto.user_id}`);
-      return data;
+      return this.mapPrismaSubscriptionToInterface(created);
     } catch (error) {
       this.logger.error('Erro no serviço de assinaturas:', error);
       throw error;
@@ -55,24 +110,15 @@ export class SubscriptionsService {
 
   async getActiveSubscription(userId: string): Promise<SubscriptionWithPlan> {
     try {
-      const { data, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .select(`
-          *,
-          plan:plans(*)
-        `)
-        .eq('user_id', userId)
-        .eq('status', 'active')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
-
-      if (error) {
-        this.logger.error('Erro ao buscar assinatura ativa:', error);
-        throw new Error('Assinatura ativa não encontrada');
+      const s = await (this.prismaService as any).subscription.findFirst({
+        where: { userId: userId, status: 'active' },
+        include: { plan: true },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!s) {
+        throw new Error('Assinatura ativa não encontrado');
       }
-
-      return data;
+      return this.mapPrismaSubscriptionToInterface(s, s.plan) as SubscriptionWithPlan;
     } catch (error) {
       this.logger.error('Erro no serviço de assinaturas:', error);
       throw error;
@@ -81,21 +127,14 @@ export class SubscriptionsService {
 
   async getSubscriptionById(id: string): Promise<SubscriptionWithPlan> {
     try {
-      const { data, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .select(`
-          *,
-          plan:plans(*)
-        `)
-        .eq('id', id)
-        .single();
-
-      if (error) {
-        this.logger.error('Erro ao buscar assinatura por ID:', error);
+      const s = await (this.prismaService as any).subscription.findUnique({
+        where: { id },
+        include: { plan: true },
+      });
+      if (!s) {
         throw new Error('Assinatura não encontrada');
       }
-
-      return data;
+      return this.mapPrismaSubscriptionToInterface(s, s.plan) as SubscriptionWithPlan;
     } catch (error) {
       this.logger.error('Erro no serviço de assinaturas:', error);
       throw error;
@@ -104,20 +143,10 @@ export class SubscriptionsService {
 
   async updateSubscription(id: string, updateSubscriptionDto: UpdateSubscriptionDto): Promise<Subscription> {
     try {
-      const { data, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .update({ ...updateSubscriptionDto, updated_at: new Date().toISOString() })
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) {
-        this.logger.error('Erro ao atualizar assinatura:', error);
-        throw new Error('Erro ao atualizar assinatura');
-      }
-
+      const dataToUpdate = this.mapUpdateDtoToPrismaData(updateSubscriptionDto);
+      const updated = await (this.prismaService as any).subscription.update({ where: { id }, data: dataToUpdate });
       this.logger.log(`Assinatura ${id} atualizada com sucesso`);
-      return data;
+      return this.mapPrismaSubscriptionToInterface(updated);
     } catch (error) {
       this.logger.error('Erro no serviço de assinaturas:', error);
       throw error;
@@ -126,24 +155,12 @@ export class SubscriptionsService {
 
   async cancelSubscription(id: string): Promise<Subscription> {
     try {
-      const { data, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .update({ 
-          status: 'cancelled',
-          cancelled_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) {
-        this.logger.error('Erro ao cancelar assinatura:', error);
-        throw new Error('Erro ao cancelar assinatura');
-      }
-
+      const updated = await (this.prismaService as any).subscription.update({
+        where: { id },
+        data: { status: 'cancelled', cancelledAt: new Date() },
+      });
       this.logger.log(`Assinatura ${id} cancelada com sucesso`);
-      return data;
+      return this.mapPrismaSubscriptionToInterface(updated);
     } catch (error) {
       this.logger.error('Erro no serviço de assinaturas:', error);
       throw error;
@@ -152,21 +169,12 @@ export class SubscriptionsService {
 
   async getUserSubscriptions(userId: string): Promise<SubscriptionWithPlan[]> {
     try {
-      const { data, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .select(`
-          *,
-          plan:plans(*)
-        `)
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        this.logger.error('Erro ao buscar assinaturas do usuário:', error);
-        throw new Error('Erro ao buscar assinaturas');
-      }
-
-      return data || [];
+      const subs = await (this.prismaService as any).subscription.findMany({
+        where: { userId },
+        include: { plan: true },
+        orderBy: { createdAt: 'desc' },
+      });
+      return (subs || []).map((s: any) => this.mapPrismaSubscriptionToInterface(s, s.plan) as SubscriptionWithPlan);
     } catch (error) {
       this.logger.error('Erro no serviço de assinaturas:', error);
       throw error;
@@ -176,23 +184,13 @@ export class SubscriptionsService {
   async checkSubscriptionExpiration(): Promise<void> {
     try {
       const now = new Date();
-      
-      // Buscar assinaturas expiradas
-      const { data: expiredSubscriptions, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .select('*')
-        .eq('status', 'active')
-        .lt('current_period_end', now.toISOString());
-
-      if (error) {
-        this.logger.error('Erro ao verificar assinaturas expiradas:', error);
-        return;
-      }
-
-      // Marcar como expiradas
-      for (const subscription of expiredSubscriptions || []) {
-        await this.updateSubscription(subscription.id, { status: 'expired' });
-        this.logger.log(`Assinatura ${subscription.id} marcada como expirada`);
+      const expired = await (this.prismaService as any).subscription.findMany({
+        where: { status: 'active', currentPeriodEnd: { lt: now } },
+        select: { id: true },
+      });
+      for (const s of expired || []) {
+        await (this.prismaService as any).subscription.update({ where: { id: s.id }, data: { status: 'expired' } });
+        this.logger.log(`Assinatura ${s.id} marcada como expirada`);
       }
     } catch (error) {
       this.logger.error('Erro ao verificar expiração de assinaturas:', error);
@@ -203,25 +201,27 @@ export class SubscriptionsService {
     try {
       this.logger.log(`🎁 Criando assinatura Fremium para usuário: ${userId}`);
       
-      // Buscar plano Fremium
-      const { data: fremiumPlan, error: planError } = await this.supabaseService.getClient()
-        .from('plans')
-        .select('*')
-        .eq('name', 'Fremium')
-        .eq('is_active', true)
-        .single();
-
-      if (planError || !fremiumPlan) {
-        this.logger.error('Erro ao buscar plano Fremium:', planError);
-        
-        // Se não existe, criar o plano Fremium automaticamente
-        const newFremiumPlan = await this.createFremiumPlan();
-        return this.createSubscription({
-          user_id: userId,
-          plan_id: newFremiumPlan.id,
-          billing_cycle: 'monthly',
-          status: 'active',
-          jurisdiction: 'PT' // Default para PT/ES
+      // Buscar plano Fremium no Prisma
+      let fremiumPlan = await (this.prismaService as any).plan.findFirst({
+        where: { name: 'Fremium', isActive: true },
+      });
+      if (!fremiumPlan) {
+        this.logger.warn('Plano Fremium não encontrado. Criando...');
+        fremiumPlan = await (this.prismaService as any).plan.create({
+          data: {
+            name: 'Fremium',
+            description: 'Plano gratuito com 2 consultas jurídicas',
+            monthlyPrice: 0,
+            yearlyPrice: 0,
+            consultationLimit: 2,
+            documentAnalysisLimit: 1,
+            messageLimit: 2,
+            isUnlimited: false,
+            isActive: true,
+            jurisdiction: 'PT',
+            ddi: '351',
+            features: ['2 consultas jurídicas', '1 análise de documento', 'Suporte básico'],
+          },
         });
       }
 
@@ -230,7 +230,7 @@ export class SubscriptionsService {
         plan_id: fremiumPlan.id,
         billing_cycle: 'monthly',
         status: 'active',
-        jurisdiction: fremiumPlan.jurisdiction
+        jurisdiction: fremiumPlan.jurisdiction,
       });
 
       this.logger.log(`✅ Assinatura Fremium criada com sucesso para usuário: ${userId}`);
@@ -244,43 +244,7 @@ export class SubscriptionsService {
   /**
    * Cria o plano Fremium se não existir
    */
-  private async createFremiumPlan(): Promise<any> {
-    try {
-      this.logger.log('🔧 Criando plano Fremium automaticamente...');
-      
-      const fremiumPlanData = {
-        name: 'Fremium',
-        description: 'Plano gratuito com 2 consultas jurídicas',
-        monthly_price: 0,
-        yearly_price: 0,
-        consultation_limit: 2,
-        document_analysis_limit: 1,
-        message_limit: 2,
-        is_unlimited: false,
-        is_active: true,
-        jurisdiction: 'PT',
-        ddi: '351',
-        features: ['2 consultas jurídicas', '1 análise de documento', 'Suporte básico']
-      };
-
-      const { data, error } = await this.supabaseService.getClient()
-        .from('plans')
-        .insert(fremiumPlanData)
-        .select()
-        .single();
-
-      if (error) {
-        this.logger.error('Erro ao criar plano Fremium:', error);
-        throw new Error('Erro ao criar plano Fremium');
-      }
-
-      this.logger.log('✅ Plano Fremium criado com sucesso');
-      return data;
-    } catch (error) {
-      this.logger.error('Erro ao criar plano Fremium:', error);
-      throw error;
-    }
-  }
+  // Removido: criação via Supabase. A criação agora é feita diretamente via Prisma acima.
 
   // ===== NOVOS MÉTODOS PARA CHAT LAWX =====
 
@@ -294,22 +258,17 @@ export class SubscriptionsService {
     stripeCustomerId: string
   ): Promise<Subscription> {
     try {
-      // Buscar plano para obter informações do Stripe
-      const { data: plan, error: planError } = await this.supabaseService.getClient()
-        .from('plans')
-        .select('*')
-        .eq('id', planId)
-        .single();
-
-      if (planError) {
-        this.logger.error('Erro ao buscar plano:', planError);
+      // Buscar plano para obter informações do Stripe via Prisma
+      const plan = await (this.prismaService as any).plan.findUnique({ where: { id: planId } });
+      if (!plan) {
+        this.logger.error('Erro ao buscar plano (Prisma): Plano não encontrado');
         throw new Error('Plano não encontrado');
       }
 
       // Criar assinatura no Stripe
       const stripePriceId = billingCycle === 'monthly' 
-        ? plan.stripe_price_id_monthly 
-        : plan.stripe_price_id_yearly;
+        ? plan.stripePriceIdMonthly 
+        : plan.stripePriceIdYearly;
 
       if (!stripePriceId) {
         throw new Error('Preço do Stripe não encontrado para este plano');
@@ -326,18 +285,15 @@ export class SubscriptionsService {
       });
 
       // Criar assinatura local
-      const subscriptionData = {
+      const subscriptionData: CreateSubscriptionDto = {
         user_id: userId,
         plan_id: planId,
         billing_cycle: billingCycle,
-        status: 'active' as const,
+        status: 'active',
         stripe_subscription_id: stripeSubscription.id,
         stripe_customer_id: stripeCustomerId,
         jurisdiction: plan.jurisdiction,
-        sync_status: 'synced' as const,
-        last_sync_at: new Date().toISOString(),
       };
-
       return await this.createSubscription(subscriptionData);
     } catch (error) {
       this.logger.error('Erro ao criar assinatura Stripe:', error);
@@ -498,17 +454,10 @@ export class SubscriptionsService {
    */
   private async getSubscriptionByStripeId(stripeSubscriptionId: string): Promise<Subscription | null> {
     try {
-      const { data, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .select('*')
-        .eq('stripe_subscription_id', stripeSubscriptionId)
-        .single();
-
-      if (error) {
-        return null;
-      }
-
-      return data;
+      const s = await (this.prismaService as any).subscription.findFirst({
+        where: { stripeSubscriptionId: stripeSubscriptionId },
+      });
+      return s ? this.mapPrismaSubscriptionToInterface(s) : null;
     } catch (error) {
       this.logger.error('Erro ao buscar assinatura por ID do Stripe:', error);
       return null;
@@ -542,35 +491,30 @@ export class SubscriptionsService {
    */
   async syncSubscriptionsWithStripe(): Promise<void> {
     try {
-      const { data: subscriptions, error } = await this.supabaseService.getClient()
-        .from('subscriptions')
-        .select('*')
-        .eq('sync_status', 'pending')
-        .not('stripe_subscription_id', 'is', null);
-
-      if (error) {
-        this.logger.error('Erro ao buscar assinaturas para sincronização:', error);
-        return;
-      }
+      const subscriptions = await (this.prismaService as any).subscription.findMany({
+        where: { syncStatus: 'pending', NOT: { stripeSubscriptionId: null } },
+      });
 
       for (const subscription of subscriptions) {
         try {
-          const stripeSubscription = await this.stripeService.getSubscription(subscription.stripe_subscription_id);
+          const stripeSubscription = await this.stripeService.getSubscription(subscription.stripeSubscriptionId);
           
-          await this.updateSubscription(subscription.id, {
-            status: this.mapStripeStatus(stripeSubscription.status),
-            current_period_end: new Date(stripeSubscription.current_period_end * 1000).toISOString(),
-            sync_status: 'synced',
-            last_sync_at: new Date().toISOString(),
+          await (this.prismaService as any).subscription.update({
+            where: { id: subscription.id },
+            data: {
+              status: this.mapStripeStatus(stripeSubscription.status),
+              currentPeriodEnd: new Date(stripeSubscription.current_period_end * 1000),
+              syncStatus: 'synced',
+              lastSyncAt: new Date(),
+            },
           });
 
           this.logger.log(`Assinatura ${subscription.id} sincronizada com Stripe`);
         } catch (error) {
           this.logger.error(`Erro ao sincronizar assinatura ${subscription.id}:`, error);
-          
-          await this.updateSubscription(subscription.id, {
-            sync_status: 'error',
-            last_sync_at: new Date().toISOString(),
+          await (this.prismaService as any).subscription.update({
+            where: { id: subscription.id },
+            data: { syncStatus: 'error', lastSyncAt: new Date() },
           });
         }
       }

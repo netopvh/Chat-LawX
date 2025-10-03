@@ -71,6 +71,15 @@ export class ExternalController {
       ? this.jurisdictionService.getJurisdictionConfig(forcedJurisdiction) || this.jurisdictionService.detectJurisdiction(phone)
       : this.jurisdictionService.detectJurisdiction(phone);
 
+    console.log('jurisdictionInfo', jurisdictionInfo);
+    console.log('phone', phone);
+    console.log('forcedJurisdiction', forcedJurisdiction);
+    console.log('email', email);
+    console.log('plan', plan);
+    console.log('interval', interval);
+    console.log('success_url', success_url);
+    console.log('priceId', priceId);
+
     // Garantir usuário (PT/ES criamos/retornamos; BR exige cadastro prévio)
     const user = await this.usersService.getOrCreateUser(phone, jurisdictionInfo.jurisdiction);
     if (!user) {

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { PlansService } from './plans.service';
 import { PlansController } from './plans.controller';
 import { SupabaseModule } from '../supabase/supabase.module';
@@ -8,7 +8,7 @@ import { JurisdictionModule } from '../jurisdiction/jurisdiction.module';
 @Module({
   imports: [
     SupabaseModule,
-    StripeModule,
+    forwardRef(() => StripeModule),
     JurisdictionModule,
   ],
   controllers: [PlansController],

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { SubscriptionsService } from './subscriptions.service';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { PlansModule } from '../plans/plans.module';
@@ -9,7 +9,7 @@ import { JurisdictionModule } from '../jurisdiction/jurisdiction.module';
   imports: [
     SupabaseModule, 
     PlansModule,
-    StripeModule,
+    forwardRef(() => StripeModule),
     JurisdictionModule,
   ],
   providers: [SubscriptionsService],

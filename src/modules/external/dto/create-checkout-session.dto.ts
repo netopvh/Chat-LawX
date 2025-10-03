@@ -4,7 +4,6 @@ import { IsEmail, IsEnum, IsOptional, IsString, IsUUID, Matches } from 'class-va
 export class CreateCheckoutSessionDto {
   @ApiProperty({ description: 'Telefone do usuário em formato internacional (E.164)' })
   @IsString()
-  @Matches(/^\+?[1-9]\d{6,14}$/)
   phone: string;
 
   @ApiProperty({ description: 'Email do usuário', example: 'user@example.com' })

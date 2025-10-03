@@ -60,18 +60,18 @@ async function main() {
   const plansES = [
     {
       name: 'Fremium',
-      description: 'Plan gratuito con 2 consultas jurídicas',
+      description: 'Plan gratuito con 3 consultas jurídicas',
       monthlyPrice: 0,
       yearlyPrice: 0,
-      consultationLimit: 2,
+      consultationLimit: 3,
       documentAnalysisLimit: 1,
-      messageLimit: 2,
+      messageLimit: 3,
       isUnlimited: false,
       isActive: true,
       jurisdiction: 'ES',
       ddi: '34',
       features: [
-        '2 consultas jurídicas gratuitas',
+        '3 consultas jurídicas gratuitas',
         '1 análisis de documento',
         'Soporte básico via WhatsApp',
         'Respuestas en español'

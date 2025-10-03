@@ -13,7 +13,6 @@ export class CreateCheckoutSessionDto {
 
   @ApiProperty({ description: 'ID do plano selecionado' })
   @IsString()
-  @IsUUID()
   plan_id: string;
 
   @ApiProperty({ enum: ['monthly', 'yearly'] as const })

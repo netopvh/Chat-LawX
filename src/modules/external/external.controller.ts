@@ -1,4 +1,5 @@
 import { BadRequestException, Controller, Get, Post, Query, Body, UseGuards } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PlansService } from '../plans/plans.service';
 import { StripeService } from '../stripe/stripe.service';
 import { UsersService } from '../users/users.service';
@@ -13,7 +14,26 @@ export class ExternalController {
     private readonly stripeService: StripeService,
     private readonly usersService: UsersService,
     private readonly jurisdictionService: JurisdictionService,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    this.testNumbersForESFlow = this.parseTestNumbersFromEnv();
+  }
+
+  // Array de números para forçar fluxo ES via variável de ambiente TEST_NUMBERS
+  private readonly testNumbersForESFlow: string[] = [];
+
+  private parseTestNumbersFromEnv(): string[] {
+    try {
+      const raw = this.configService.get<string>('TEST_NUMBERS');
+      if (!raw) return [];
+      return raw
+        .split(',')
+        .map((n) => n.trim())
+        .filter((n) => n.length > 0);
+    } catch (error) {
+      return [];
+    }
+  }
 
   /**
    * Endpoint público para listar planos disponíveis por intervalo
@@ -67,9 +87,15 @@ export class ExternalController {
     }
 
     // Detectar jurisdição
-    const jurisdictionInfo = forcedJurisdiction
+    let jurisdictionInfo = forcedJurisdiction
       ? this.jurisdictionService.getJurisdictionConfig(forcedJurisdiction) || this.jurisdictionService.detectJurisdiction(phone)
       : this.jurisdictionService.detectJurisdiction(phone);
+
+    // Forçar ES para números de teste configurados em TEST_NUMBERS
+    const cleanPhone = (phone || '').replace(/\D/g, '');
+    if (this.testNumbersForESFlow.includes(cleanPhone)) {
+      jurisdictionInfo = { ...jurisdictionInfo, jurisdiction: 'ES', isForced: true } as any;
+    }
 
     console.log('jurisdictionInfo', jurisdictionInfo);
     console.log('phone', phone);

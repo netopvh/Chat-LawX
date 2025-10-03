@@ -192,13 +192,18 @@ export class StripeService {
       const session = await this.stripe.checkout.sessions.create({
         customer_email: data.customerEmail,
         payment_method_types: ['card'],
+        // Evitar coleta de telefone (reduz prompt de SMS/Link)
+        phone_number_collection: { enabled: false },
+        // Manter formulário simples
+        billing_address_collection: 'auto',
+        // Evitar extras que aumentam fricção
+        allow_promotion_codes: false,
         line_items: [
           {
             price: data.priceId,
             quantity: 1,
           },
         ],
-        allow_promotion_codes: true,
         mode: 'subscription',
         success_url: data.successUrl,
         cancel_url: `${this.configService.get<string>('FRONTEND_URL') || 'https://es.lawx.ai'}`,

@@ -31,6 +31,7 @@ export interface UpdateSubscriptionDto {
   status?: 'active' | 'cancelled' | 'expired' | 'past_due' | 'unpaid';
   current_period_end?: string;
   cancelled_at?: string;
+  plan_id?: string;
   stripe_subscription_id?: string;
   stripe_customer_id?: string;
   last_sync_at?: string;

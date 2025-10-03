@@ -86,6 +86,7 @@ export class SubscriptionsService {
       status: dto.status,
       currentPeriodEnd: dto.current_period_end ? new Date(dto.current_period_end) : undefined,
       cancelledAt: dto.cancelled_at ? new Date(dto.cancelled_at) : undefined,
+      planId: dto.plan_id,
       stripeSubscriptionId: dto.stripe_subscription_id,
       stripeCustomerId: dto.stripe_customer_id,
       lastSyncAt: dto.last_sync_at ? new Date(dto.last_sync_at) : undefined,

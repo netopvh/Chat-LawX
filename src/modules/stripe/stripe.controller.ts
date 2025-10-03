@@ -1,6 +1,9 @@
 import { Controller, Post, Body, Headers, RawBody, Logger, BadRequestException } from '@nestjs/common';
 import { StripeService } from './stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { UsersService } from '../users/users.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { PlansService } from '../plans/plans.service';
 import { StripeWebhookDto } from './dto/stripe-webhook.dto';
 
 @Controller('stripe')
@@ -10,6 +13,9 @@ export class StripeController {
   constructor(
     private readonly stripeService: StripeService,
     private readonly prisma: PrismaService,
+    private readonly usersService: UsersService,
+    private readonly subscriptionsService: SubscriptionsService,
+    private readonly plansService: PlansService,
   ) {}
 
   /**
@@ -94,55 +100,59 @@ export class StripeController {
   private async handleSubscriptionCreated(event: any) {
     const subscription = event.data.object;
     this.logger.log(`Assinatura criada: ${subscription.id} para cliente ${subscription.customer}`);
-    
-    // Ativar assinatura no sistema local (Prisma)
-    const userId = subscription.metadata?.userId || subscription.metadata?.user_id;
-    const planName = subscription.metadata?.planName || subscription.metadata?.plan_name;
-    const jurisdiction = subscription.metadata?.jurisdiction || 'PT';
 
-    if (!userId || !planName) {
-      this.logger.warn('Webhook sem metadata userId/planName; ignorando criação local');
+    const phone = subscription.metadata?.phone || subscription.metadata?.phone_number;
+    const jurisdiction = subscription.metadata?.jurisdiction;
+    const planIdFromMeta = subscription.metadata?.planId || subscription.metadata?.plan_id;
+    const planNameFromMeta = subscription.metadata?.planName || subscription.metadata?.plan_name;
+
+    if (!phone) {
+      this.logger.warn('Evento de assinatura criada sem metadata.phone; ignorando');
       return;
     }
 
-    const plan = await (this.prisma as any).plan.findFirst({ where: { name: planName, isActive: true } });
-    if (!plan) {
-      this.logger.warn(`Plano não encontrado no Prisma: ${planName}`);
+    // Resolver usuário pelo telefone
+    const user = await this.usersService.getOrCreateUser(phone, jurisdiction);
+    if (!user) {
+      this.logger.warn(`Usuário não encontrado/gerado para phone ${phone}`);
       return;
     }
 
-    // Cancelar assinatura ativa anterior (se houver)
-    const prev = await this.prisma.findUserSubscription(userId);
-    if (prev) {
-      await (this.prisma as any).subscription.update({ where: { id: prev.id }, data: { status: 'cancelled', cancelledAt: new Date() } });
-    }
-
-    // Criar nova assinatura ativa
-    const now = new Date();
-    const periodEnd = new Date(now);
-    if (subscription.items?.data?.[0]?.price?.recurring?.interval === 'year') {
-      periodEnd.setFullYear(periodEnd.getFullYear() + 1);
-    } else {
-      periodEnd.setMonth(periodEnd.getMonth() + 1);
-    }
-
-    const created = await (this.prisma as any).subscription.create({
-      data: {
-        userId,
-        planId: plan.id,
-        status: 'active',
-        billingCycle: subscription.items?.data?.[0]?.price?.recurring?.interval === 'year' ? 'yearly' : 'monthly',
-        currentPeriodStart: now,
-        currentPeriodEnd: periodEnd,
-        stripeSubscriptionId: subscription.id,
-        stripeCustomerId: subscription.customer as string,
-        jurisdiction,
-        syncStatus: 'synced',
+    // Resolver plano
+    let planId = planIdFromMeta as string | undefined;
+    if (!planId && planNameFromMeta) {
+      try {
+        const plan = await this.plansService.getPlanByName(planNameFromMeta);
+        planId = plan.id;
+      } catch (e) {
+        this.logger.warn(`Plano não encontrado por nome: ${planNameFromMeta}`);
       }
-    });
+    }
+    if (!planId) {
+      this.logger.warn('Sem planId/planName na metadata; não é possível atualizar assinatura');
+      return;
+    }
 
-    // Inicializar usage tracking
-    await this.prisma.findOrCreateUsageTracking(userId, created.id, now, periodEnd, jurisdiction);
+    // Tentar atualizar assinatura ativa; se não existir, criar uma
+    try {
+      const active = await this.subscriptionsService.getActiveSubscription(user.id);
+      await this.subscriptionsService.updateSubscription(active.id, {
+        plan_id: planId,
+        stripe_subscription_id: subscription.id,
+        status: 'active',
+      });
+    } catch (e) {
+      // Sem assinatura ativa: criar localmente
+      await this.subscriptionsService.createSubscription({
+        user_id: user.id,
+        plan_id: planId,
+        billing_cycle: subscription.items?.data?.[0]?.price?.recurring?.interval === 'year' ? 'yearly' : 'monthly',
+        status: 'active',
+        stripe_subscription_id: subscription.id,
+        stripe_customer_id: subscription.customer as string,
+        jurisdiction: jurisdiction,
+      });
+    }
   }
 
   /**
@@ -151,17 +161,13 @@ export class StripeController {
   private async handleSubscriptionUpdated(event: any) {
     const subscription = event.data.object;
     this.logger.log(`Assinatura atualizada: ${subscription.id} - Status: ${subscription.status}`);
-    
     const local = await (this.prisma as any).subscription.findFirst({ where: { stripeSubscriptionId: subscription.id } });
     if (!local) return;
-    await (this.prisma as any).subscription.update({
-      where: { id: local.id },
-      data: {
-        status: subscription.status === 'active' ? 'active' : (subscription.status === 'past_due' ? 'past_due' : local.status),
-        currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-        syncStatus: 'synced',
-        updatedAt: new Date(),
-      }
+    await this.subscriptionsService.updateSubscription(local.id, {
+      status: subscription.status === 'active' ? 'active' : (subscription.status === 'past_due' ? 'past_due' : local.status),
+      current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+      sync_status: 'synced',
+      last_sync_at: new Date().toISOString(),
     });
   }
 
@@ -171,12 +177,13 @@ export class StripeController {
   private async handleSubscriptionDeleted(event: any) {
     const subscription = event.data.object;
     this.logger.log(`Assinatura cancelada: ${subscription.id}`);
-    
     const local = await (this.prisma as any).subscription.findFirst({ where: { stripeSubscriptionId: subscription.id } });
     if (!local) return;
-    await (this.prisma as any).subscription.update({
-      where: { id: local.id },
-      data: { status: 'cancelled', cancelledAt: new Date(), updatedAt: new Date() }
+    await this.subscriptionsService.updateSubscription(local.id, {
+      status: 'cancelled',
+      cancelled_at: new Date().toISOString(),
+      last_sync_at: new Date().toISOString(),
+      sync_status: 'synced',
     });
   }
 
@@ -206,7 +213,61 @@ export class StripeController {
   private async handleCheckoutCompleted(event: any) {
     const session = event.data.object;
     this.logger.log(`Checkout completado: ${session.id} para cliente ${session.customer}`);
-    
-    // Nada aqui: a criação/ativação final é confirmada pelos eventos de subscription/invoice
+
+    const phone = session.metadata?.phone || session.metadata?.phone_number;
+    const jurisdiction = session.metadata?.jurisdiction;
+    const planId = session.metadata?.planId || session.metadata?.plan_id;
+    const planName = session.metadata?.planName || session.metadata?.plan_name;
+    const billingCycle = session.metadata?.billingCycle || (session.mode === 'subscription' ? (session.subscription_details?.interval || 'monthly') : 'monthly');
+    const stripeSubscriptionId = session.subscription as string | undefined;
+    const stripeCustomerId = session.customer as string | undefined;
+
+    if (!phone) {
+      this.logger.warn('Checkout session sem metadata.phone; ignorando');
+      return;
+    }
+
+    // Resolver usuário pelo telefone
+    const user = await this.usersService.getOrCreateUser(phone, jurisdiction);
+    if (!user) {
+      this.logger.warn(`Usuário não encontrado/gerado para phone ${phone}`);
+      return;
+    }
+
+    // Resolver plano
+    let resolvedPlanId = planId as string | undefined;
+    if (!resolvedPlanId && planName) {
+      try {
+        const plan = await this.plansService.getPlanByName(planName);
+        resolvedPlanId = plan.id;
+      } catch (e) {
+        this.logger.warn(`Plano não encontrado por nome: ${planName}`);
+      }
+    }
+    if (!resolvedPlanId) {
+      this.logger.warn('Sem planId/planName na metadata; não é possível atualizar assinatura');
+      return;
+    }
+
+    // Atualizar assinatura ativa ou criar se não existir
+    try {
+      const active = await this.subscriptionsService.getActiveSubscription(user.id);
+      await this.subscriptionsService.updateSubscription(active.id, {
+        plan_id: resolvedPlanId,
+        stripe_subscription_id: stripeSubscriptionId,
+        stripe_customer_id: stripeCustomerId,
+        status: 'active',
+      });
+    } catch (e) {
+      await this.subscriptionsService.createSubscription({
+        user_id: user.id,
+        plan_id: resolvedPlanId,
+        billing_cycle: billingCycle === 'year' ? 'yearly' : (billingCycle || 'monthly'),
+        status: 'active',
+        stripe_subscription_id: stripeSubscriptionId,
+        stripe_customer_id: stripeCustomerId,
+        jurisdiction: jurisdiction,
+      });
+    }
   }
 }

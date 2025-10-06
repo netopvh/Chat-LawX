@@ -11,13 +11,14 @@ export class MessagingLogService {
     return (phone || '').replace(/\D/g, '');
   }
 
-  async logInboundText(params: { sessionId: string; phone: string; jurisdiction: string; text: string; }): Promise<void> {
+  async logInboundText(params: { sessionId: string; phone: string; jurisdiction: string; text: string; conversationId?: string; }): Promise<void> {
     try {
       await (this.prisma as any).whatsAppMessage.create({
         data: {
           sessionId: params.sessionId,
           phone: this.normalizePhone(params.phone),
           jurisdiction: params.jurisdiction,
+          conversationId: params.conversationId,
           messageType: 'text',
           direction: 'inbound',
           role: 'user',
@@ -29,13 +30,14 @@ export class MessagingLogService {
     }
   }
 
-  async logInboundMedia(params: { sessionId: string; phone: string; jurisdiction: string; messageType: 'audio'|'image'|'document'; url: string; json?: any; }): Promise<void> {
+  async logInboundMedia(params: { sessionId: string; phone: string; jurisdiction: string; messageType: 'audio'|'image'|'document'; url: string; conversationId?: string; json?: any; }): Promise<void> {
     try {
       await (this.prisma as any).whatsAppMessage.create({
         data: {
           sessionId: params.sessionId,
           phone: this.normalizePhone(params.phone),
           jurisdiction: params.jurisdiction,
+          conversationId: params.conversationId,
           messageType: params.messageType,
           direction: 'inbound',
           role: 'user',
@@ -48,13 +50,14 @@ export class MessagingLogService {
     }
   }
 
-  async logOutboundText(params: { sessionId: string; phone: string; jurisdiction: string; text: string; model?: string; tokens?: number; role?: 'assistant'|'system'; replyToId?: string; json?: any; }): Promise<void> {
+  async logOutboundText(params: { sessionId: string; phone: string; jurisdiction: string; text: string; conversationId?: string; model?: string; tokens?: number; role?: 'assistant'|'system'; replyToId?: string; json?: any; }): Promise<void> {
     try {
       await (this.prisma as any).whatsAppMessage.create({
         data: {
           sessionId: params.sessionId,
           phone: this.normalizePhone(params.phone),
           jurisdiction: params.jurisdiction,
+          conversationId: params.conversationId,
           messageType: 'text',
           direction: 'outbound',
           role: params.role || 'assistant',
@@ -70,13 +73,14 @@ export class MessagingLogService {
     }
   }
 
-  async logOutboundMedia(params: { sessionId: string; phone: string; jurisdiction: string; messageType: 'audio'|'image'|'document'; url: string; model?: string; tokens?: number; role?: 'assistant'|'system'; replyToId?: string; json?: any; }): Promise<void> {
+  async logOutboundMedia(params: { sessionId: string; phone: string; jurisdiction: string; messageType: 'audio'|'image'|'document'; url: string; conversationId?: string; model?: string; tokens?: number; role?: 'assistant'|'system'; replyToId?: string; json?: any; }): Promise<void> {
     try {
       await (this.prisma as any).whatsAppMessage.create({
         data: {
           sessionId: params.sessionId,
           phone: this.normalizePhone(params.phone),
           jurisdiction: params.jurisdiction,
+          conversationId: params.conversationId,
           messageType: params.messageType,
           direction: 'outbound',
           role: params.role || 'assistant',

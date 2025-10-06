@@ -49,6 +49,7 @@ interface ConversationState {
   ddi?: string;
   pendingName?: string;
   pendingEmail?: string;
+  conversationId?: string;
 }
 
 @Injectable()
@@ -282,6 +283,9 @@ export class WhatsAppService {
         return;
       }
 
+      // Tentar extrair conversationId do payload de statuses (se presente)
+      const statusConversationId = payload?.entry?.[0]?.changes?.[0]?.value?.statuses?.[0]?.conversation?.id;
+
       const messages = CloudWebhookAdapter.extractMessages(payload);
       for (const msg of messages) {
         if (this.hasProcessedMessage(msg.messageId)) {
@@ -299,6 +303,7 @@ export class WhatsAppService {
         this.setConversationState(phone, {
           jurisdiction: jurisdictionInfo.jurisdiction,
           ddi: jurisdictionInfo.ddi,
+          conversationId: statusConversationId || this.getConversationState(phone).conversationId,
         });
 
         if (jurisdictionInfo.jurisdiction === 'BR') {
@@ -1320,7 +1325,7 @@ Mensagem: "${text.trim()}"`;
         const sessionId = check.session?.id;
         const jurisdiction = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
         if (sessionId) {
-          await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction, text });
+          await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction, text, conversationId: this.getConversationState(phone).conversationId });
         }
       } catch {}
 
@@ -1375,13 +1380,13 @@ Mensagem: "${text.trim()}"`;
       const sessionId = session.session?.id;
       const jurisdictionCode = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
       if (sessionId) {
-        await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl });
+        await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl, conversationId: this.getConversationState(phone).conversationId });
       }
       
       // Processar áudio para consulta jurídica
       const transcribedText = await this.audioProcessor.transcribe(normalizedBuffer);
       if (sessionId && transcribedText) {
-        await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction: jurisdictionCode, text: transcribedText });
+        await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction: jurisdictionCode, text: transcribedText, conversationId: this.getConversationState(phone).conversationId });
       }
       
       // Usar jurisdição forçada se fornecida, senão detectar
@@ -1400,7 +1405,7 @@ Mensagem: "${text.trim()}"`;
       
       await this.sendMessage(phone, response);
       if (sessionId && response) {
-        await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant' });
+        await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
       }
       
     } catch (error) {
@@ -1525,7 +1530,7 @@ Mensagem: "${text.trim()}"`;
     const sessionId = session.session?.id;
     const jurisdictionCode = this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
     if (sessionId) {
-      await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'image', url: 'uploaded://image' });
+      await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'image', url: 'uploaded://image', conversationId: this.getConversationState(phone).conversationId });
     }
 
     // Mensagem inicial conforme jurisdição
@@ -1546,7 +1551,7 @@ Mensagem: "${text.trim()}"`;
     );
 
     if (sessionId && analysis) {
-      await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: '[analysis]', role: 'assistant', json: analysis });
+      await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: '[analysis]', role: 'assistant', json: analysis, conversationId: this.getConversationState(phone).conversationId });
     }
 
     await this.saveLegalDocument(analysis, jurisdiction.jurisdiction, user?.id);
@@ -1560,7 +1565,7 @@ Mensagem: "${text.trim()}"`;
 
     await this.sendMessage(phone, response);
     if (sessionId) {
-      await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant' });
+      await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
     }
 
     if (user?.id) {
@@ -1607,7 +1612,7 @@ Mensagem: "${text.trim()}"`;
       const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
       const sId = sessionCheck.session?.id;
       if (sId) {
-        await this.messagingLog.logInboundMedia({ sessionId: sId, phone, jurisdiction: jCode, messageType: 'document', url: fileUrl });
+        await this.messagingLog.logInboundMedia({ sessionId: sId, phone, jurisdiction: jCode, messageType: 'document', url: fileUrl, conversationId: this.getConversationState(phone).conversationId });
       }
     } catch {}
 
@@ -1620,7 +1625,7 @@ Mensagem: "${text.trim()}"`;
       const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
       const sId = sessionCheck.session?.id;
       if (sId) {
-        await this.messagingLog.logOutboundText({ sessionId: sId, phone, jurisdiction: jCode, text: formattedAnalysis, role: 'assistant' });
+        await this.messagingLog.logOutboundText({ sessionId: sId, phone, jurisdiction: jCode, text: formattedAnalysis, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
       }
     } catch {}
 
@@ -1639,17 +1644,17 @@ Mensagem: "${text.trim()}"`;
     const sessionId = session.session?.id;
     const jurisdictionCode = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
     if (sessionId) {
-      await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl });
+      await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl, conversationId: this.getConversationState(phone).conversationId });
     }
     const transcribedText = await this.audioProcessor.transcribe(mp3Buffer);
     if (sessionId && transcribedText) {
-      await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction: jurisdictionCode, text: transcribedText });
+      await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction: jurisdictionCode, text: transcribedText, conversationId: this.getConversationState(phone).conversationId });
     }
     const j = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
     const response = await this.aiService.generateLegalResponse(transcribedText, phone, user?.id, undefined, jurisdiction);
     await this.sendMessage(phone, response);
     if (sessionId && response) {
-      await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: j, text: response, role: 'assistant' });
+      await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: j, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
     }
   }
 
@@ -1696,7 +1701,7 @@ Mensagem: "${text.trim()}"`;
         const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
         const sessionId = check.session?.id;
         if (sessionId && response) {
-          await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant' });
+          await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
         }
       } catch {}
       

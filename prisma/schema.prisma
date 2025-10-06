@@ -196,6 +196,7 @@ model WhatsAppMessage {
   model         String?
   tokenCount    Int?
   replyToId     String?
+  conversationId String?
   jurisdiction  String
   createdAt     DateTime @default(now())
   
@@ -204,5 +205,6 @@ model WhatsAppMessage {
   @@index([sessionId, createdAt])
   @@index([phone, createdAt])
   @@index([jurisdiction, createdAt])
+  @@index([conversationId, createdAt])
   @@map("whatsapp_messages")
 }

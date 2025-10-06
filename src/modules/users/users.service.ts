@@ -279,10 +279,11 @@ export class UsersService {
    */
   private async registerLocalUser(phone: string, name: string, email: string, jurisdiction: any): Promise<User> {
     try {
+      const cleanPhone = this.normalizePhone(phone);
       // Criar usuário no MySQL via Prisma
       const user = await this.prismaService.user.create({
         data: {
-          phone: phone,
+          phone: cleanPhone,
           name: name,
           email: email,
           ddi: jurisdiction.ddi,
@@ -357,8 +358,9 @@ export class UsersService {
    */
   private async getLocalUser(phone: string, jurisdiction: any): Promise<User> {
     try {
+      const cleanPhone = this.normalizePhone(phone);
       // Buscar no MySQL local via Prisma
-      const localUser = await this.prismaService.findUserByPhone(phone);
+      const localUser = await this.prismaService.findUserByPhone(cleanPhone);
       
       if (localUser) {
         return {
@@ -377,7 +379,7 @@ export class UsersService {
       // Se não encontrou, criar usuário local
       const newUser = await this.prismaService.user.create({
         data: {
-          phone,
+          phone: cleanPhone,
           ddi: jurisdiction.ddi,
           jurisdiction: jurisdiction.jurisdiction,
           name: '',
@@ -409,6 +411,10 @@ export class UsersService {
       console.error('❌ Erro ao buscar/criar usuário local:', error);
       throw error;
     }
+  }
+
+  private normalizePhone(phone: string): string {
+    return phone.replace(/\D/g, '');
   }
 
 

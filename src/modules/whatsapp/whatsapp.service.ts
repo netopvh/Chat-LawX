@@ -1284,35 +1284,35 @@ Mensagem: "${text.trim()}"`;
       }
 
       // 1. Verificar se há sessão de upgrade ativa ou estado de upgrade (apenas PT/ES)
-      if (user && !isBrazil) {
-        const activeSession = await this.upgradeSessionsService.getActiveSession(user.id, jurisdictionInfo.jurisdiction);
-        if (activeSession || state.isInUpgradeFlow) {
-          this.logger.log('🔄 Sessão de upgrade ativa, processando com Engine...');
-          await this.upgradeFlowEngine.route(
-            phone,
-            user.id,
-            text,
-            activeSession,
-            state,
-            {
-              handlePaymentConfirmation: (p, u, ctx) => this.handlePaymentConfirmation(p, u, ctx),
-              handleFrequencySelectionWithAI: (p, u, m, ctx) => this.handleFrequencySelectionWithAI(p, u, m, ctx),
-              handlePlanSelectionWithAI: (p, u, m, ctx) => this.handlePlanSelectionWithAI(p, u, m, ctx),
-              handleCancelUpgrade: (p, u, s) => this.handleCancelUpgrade(p, u, s),
-              handleContinueUpgrade: (p, u, m, ctx) => this.handleContinueUpgrade(p, u, m, ctx),
-            }
-          );
-          return;
-        }
+      // if (user && !isBrazil) {
+      //   const activeSession = await this.upgradeSessionsService.getActiveSession(user.id, jurisdictionInfo.jurisdiction);
+      //   if (activeSession || state.isInUpgradeFlow) {
+      //     this.logger.log('🔄 Sessão de upgrade ativa, processando com Engine...');
+      //     await this.upgradeFlowEngine.route(
+      //       phone,
+      //       user.id,
+      //       text,
+      //       activeSession,
+      //       state,
+      //       {
+      //         handlePaymentConfirmation: (p, u, ctx) => this.handlePaymentConfirmation(p, u, ctx),
+      //         handleFrequencySelectionWithAI: (p, u, m, ctx) => this.handleFrequencySelectionWithAI(p, u, m, ctx),
+      //         handlePlanSelectionWithAI: (p, u, m, ctx) => this.handlePlanSelectionWithAI(p, u, m, ctx),
+      //         handleCancelUpgrade: (p, u, s) => this.handleCancelUpgrade(p, u, s),
+      //         handleContinueUpgrade: (p, u, m, ctx) => this.handleContinueUpgrade(p, u, m, ctx),
+      //       }
+      //     );
+      //     return;
+      //   }
 
-        // 2. Verificar se é uma nova intenção de upgrade (apenas PT/ES)
-        const upgradeIntent = await this.detectUpgradeIntent(text, user.id, jurisdictionInfo.jurisdiction);
-        if (upgradeIntent.isUpgradeIntent && !isBrazil) {
-          this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
-          await this.handleUpgradeFlow(phone, user.id, text, jurisdictionInfo.jurisdiction);
-          return;
-        }
-      }
+      //   // 2. Verificar se é uma nova intenção de upgrade (apenas PT/ES)
+      //   const upgradeIntent = await this.detectUpgradeIntent(text, user.id, jurisdictionInfo.jurisdiction);
+      //   if (upgradeIntent.isUpgradeIntent && !isBrazil) {
+      //     this.logger.log('🆕 Nova intenção de upgrade detectada:', upgradeIntent);
+      //     await this.handleUpgradeFlow(phone, user.id, text, jurisdictionInfo.jurisdiction);
+      //     return;
+      //   }
+      // }
 
       // 3. Log inbound texto
       try {

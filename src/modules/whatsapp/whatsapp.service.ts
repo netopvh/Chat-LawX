@@ -283,8 +283,23 @@ export class WhatsAppService {
         return;
       }
 
-      // Tentar extrair conversationId do payload de statuses (se presente)
-      const statusConversationId = payload?.entry?.[0]?.changes?.[0]?.value?.statuses?.[0]?.conversation?.id;
+      // Tentar extrair conversationId do payload de statuses (se presente) e persistir no estado/backfill
+      try {
+        const statuses = payload?.entry?.[0]?.changes?.[0]?.value?.statuses || [];
+        for (const st of statuses) {
+          const convId = st?.conversation?.id;
+          const recipient = st?.recipient_id; // wa_id do usuário
+          if (convId && recipient) {
+            const phone = String(recipient);
+            const prev = this.getConversationState(phone);
+            this.setConversationState(phone, { ...prev, conversationId: convId });
+            try {
+              // Backfill para mensagens recentes sem conversationId
+              await this.messagingLog.backfillConversationId({ phone, conversationId: convId, sinceMinutes: 180 });
+            } catch {}
+          }
+        }
+      } catch {}
 
       const messages = CloudWebhookAdapter.extractMessages(payload);
       for (const msg of messages) {
@@ -303,7 +318,7 @@ export class WhatsAppService {
         this.setConversationState(phone, {
           jurisdiction: jurisdictionInfo.jurisdiction,
           ddi: jurisdictionInfo.ddi,
-          conversationId: statusConversationId || this.getConversationState(phone).conversationId,
+          conversationId: this.getConversationState(phone).conversationId,
         });
 
         if (jurisdictionInfo.jurisdiction === 'BR') {

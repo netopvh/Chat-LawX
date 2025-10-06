@@ -11,6 +11,25 @@ export class MessagingLogService {
     return (phone || '').replace(/\D/g, '');
   }
 
+  async backfillConversationId(params: { phone: string; conversationId: string; sinceMinutes?: number }): Promise<void> {
+    try {
+      const minutes = params.sinceMinutes ?? 60;
+      const since = new Date(Date.now() - minutes * 60 * 1000);
+      await (this.prisma as any).whatsAppMessage.updateMany({
+        where: {
+          phone: this.normalizePhone(params.phone),
+          conversationId: null,
+          createdAt: { gte: since },
+        },
+        data: {
+          conversationId: params.conversationId,
+        },
+      });
+    } catch (error) {
+      this.logger.error('Erro ao fazer backfill de conversationId:', error);
+    }
+  }
+
   async logInboundText(params: { sessionId: string; phone: string; jurisdiction: string; text: string; conversationId?: string; }): Promise<void> {
     try {
       await (this.prisma as any).whatsAppMessage.create({

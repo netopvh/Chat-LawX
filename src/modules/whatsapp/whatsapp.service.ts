@@ -1829,21 +1829,18 @@ Mensagem: "${text.trim()}"`;
       );
       
       await this.sendMessageWithTyping(phone, response, 2000);
-      try {
-        const convId = this.getConversationState(phone).conversationId;
-        if (jurisdiction.jurisdiction === 'BR') {
-          await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: convId });
-          if (user?.id) {
-            await this.usageService.incrementUsage(user.id, 'message', phone);
-          }
-        } else {
-          const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
-          const sessionId = check.session?.id;
-          if (sessionId && response) {
-            await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: convId });
-          }
-        }
-      } catch {}
+      // try {
+      //   const convId = this.getConversationState(phone).conversationId;
+      //   if (jurisdiction.jurisdiction === 'BR') {
+      //     await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: convId });
+      //   } else {
+      //     const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
+      //     const sessionId = check.session?.id;
+      //     if (sessionId && response) {
+      //       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: convId });
+      //     }
+      //   }
+      // } catch {}
       
     } catch (error) {
       this.logger.error('Erro ao processar consulta jurídica:', error);

@@ -393,6 +393,26 @@ export class WhatsAppService {
             }
             if (isBR) {
               await this.updateLastMessageSent(phone);
+              // BR: detectar início de nova conversa ANTES de processar texto
+              try {
+                const newConvDetectionPrompt = `Você é um classificador. Verifique se a mensagem do usuário indica claramente o início de uma NOVA conversa/tópico (e não continuação do contexto anterior).\n\nResponda APENAS com JSON válido, exatamente no formato:\n{"isNewConversation": true|false}\n\nConsidere como "nova conversa" frases como: "novo assunto", "nova conversa", "começar de novo", "reiniciar", "mudar de tema", "vamos falar de outra coisa". Não confunda perguntas normais com intenção de romper o contexto.`;
+                const aiResp = await this.aiService.executeCustomPrompt(
+                  `Mensagem: "${(msg.media.text || '').trim()}"\n${newConvDetectionPrompt}`,
+                  'gpt-4o-mini',
+                  'Responda apenas JSON válido exatamente no formato {"isNewConversation": true|false}.',
+                  0.1,
+                );
+                let parsedNC: any | null = null;
+                try { parsedNC = aiResp ? JSON.parse(aiResp.trim()) : null; } catch { const m = aiResp && aiResp.match(/\{[\s\S]*\}/); if (m) parsedNC = JSON.parse(m[0]); }
+                const lower = (msg.media.text || '').toLowerCase();
+                const heuristic = [ 'novo assunto', 'nova conversa', 'começar de novo', 'reiniciar', 'resetar', 'mudar de tema', 'outro assunto', 'outro tema' ].some(k => lower.includes(k));
+                if ((parsedNC && parsedNC.isNewConversation === true) || heuristic) {
+                  this.logger.log('🧭 BR: (Cloud) Detectado início de nova conversa. Rotacionando conversa ativa...');
+                  await this.messagingLogBr.startNewConversation(phone);
+                }
+              } catch (ncErr) {
+                this.logger.warn('⚠️ BR: Falha ao detectar nova conversa no Cloud. Prosseguindo com conversa atual.', ncErr);
+              }
             } else {
               await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
             }
@@ -1349,8 +1369,8 @@ Mensagem: "${text.trim()}"`;
       }
 
       // 0.1 Jurisdição detectada
-      const jurisdictionInfo = forcedJurisdiction ? { jurisdiction: forcedJurisdiction } : this.jurisdictionService.detectJurisdiction(phone);
-      const isBrazil = jurisdictionInfo.jurisdiction === 'BR';
+      // const jurisdictionInfo = forcedJurisdiction ? { jurisdiction: forcedJurisdiction } : this.jurisdictionService.detectJurisdiction(phone);
+      // const isBrazil = jurisdictionInfo.jurisdiction === 'BR';
 
       // 0.2 BR: Se a mensagem indicar upgrade/assinatura, responder com link estático e NÃO iniciar fluxo
       // if (isBrazil) {

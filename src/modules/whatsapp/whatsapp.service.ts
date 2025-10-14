@@ -254,11 +254,12 @@ export class WhatsAppService {
             console.log('📨 Processando mensagem:', JSON.stringify(message, null, 2));
             // Bloquear Evolution para PT/ES quando Cloud estiver ativo
             try {
-              const flagEnabled = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
+              const flagEnabledIberia = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
+              const flagEnabledBR = String(this.configService.get('USE_CLOUD_API_BR') || '').toLowerCase() === 'true';
               const remoteJid = message?.key?.remoteJid as string | undefined;
               const phone = remoteJid ? remoteJid.replace('@s.whatsapp.net', '') : undefined;
               const j = phone ? this.jurisdictionService.detectJurisdiction(phone).jurisdiction : undefined;
-              if (flagEnabled && (j === 'PT' || j === 'ES')) {
+              if ((flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
                 this.logger.log(`⛔ Ignorando evento Evolution para ${phone} (${j}) porque Cloud está ativo.`);
                 continue;
               }
@@ -321,11 +322,6 @@ export class WhatsAppService {
           conversationId: this.getConversationState(phone).conversationId,
         });
 
-        if (jurisdictionInfo.jurisdiction === 'BR') {
-          // BR permanece em Evolution
-          continue;
-        }
-
         // Alinhar comportamento: se está em análise (ES/PT), seguir as mesmas regras do processSpanishMessage/processPortugueseMessage
         const currentState = this.getConversationState(phone);
         if (currentState.isInAnalysis) {
@@ -355,24 +351,39 @@ export class WhatsAppService {
           continue;
         }
 
+        const isBR = jurisdictionInfo.jurisdiction === 'BR';
         switch (msg.media.kind) {
           case 'text': {
             // Aplicar o mesmo gating do Evolution e processar texto diretamente
             const state = this.getConversationState(phone);
             const user = await this.usersService.getOrCreateUser(phone, jurisdictionInfo.jurisdiction);
             if (!user || !user.is_registered) {
-              await this.handleUnregisteredUser(phone, msg.media.text, state, jurisdictionInfo, false);
+              await this.handleUnregisteredUser(phone, msg.media.text, state, jurisdictionInfo, isBR);
               break;
             }
-            const sessionResult = await this.checkWhatsAppSession(phone, jurisdictionInfo.jurisdiction);
+            const sessionResult = isBR
+              ? await this.checkBrazilianUserSession(phone)
+              : await this.checkWhatsAppSession(phone, jurisdictionInfo.jurisdiction);
             if (!sessionResult.session) {
-              await this.handleWhatsAppUserWelcome(phone, msg.media.text, state, jurisdictionInfo);
+              if (isBR) {
+                await this.handleBrazilianUserWelcome(phone, msg.media.text, state);
+              } else {
+                await this.handleWhatsAppUserWelcome(phone, msg.media.text, state, jurisdictionInfo);
+              }
               break;
             }
             if (sessionResult.needsWelcomeBack) {
-              await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdictionInfo.jurisdiction);
+              if (isBR) {
+                await this.handleWelcomeBackMessage(phone, sessionResult.session);
+              } else {
+                await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdictionInfo.jurisdiction);
+              }
             }
-            await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
+            if (isBR) {
+              await this.updateLastMessageSent(phone);
+            } else {
+              await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
+            }
             await this.handleTextMessage(msg.media.text, user, phone, state, jurisdictionInfo.jurisdiction);
             break;
           }
@@ -381,18 +392,32 @@ export class WhatsAppService {
             const state = this.getConversationState(phone);
             const user = await this.usersService.getOrCreateUser(phone, jurisdictionInfo.jurisdiction);
             if (!user || !user.is_registered) {
-              await this.handleUnregisteredUser(phone, '', state, jurisdictionInfo, false);
+              await this.handleUnregisteredUser(phone, '', state, jurisdictionInfo, isBR);
               break;
             }
-            const sessionResult = await this.checkWhatsAppSession(phone, jurisdictionInfo.jurisdiction);
+            const sessionResult = isBR
+              ? await this.checkBrazilianUserSession(phone)
+              : await this.checkWhatsAppSession(phone, jurisdictionInfo.jurisdiction);
             if (!sessionResult.session) {
-              await this.handleWhatsAppUserWelcome(phone, '', state, jurisdictionInfo);
+              if (isBR) {
+                await this.handleBrazilianUserWelcome(phone, '', state);
+              } else {
+                await this.handleWhatsAppUserWelcome(phone, '', state, jurisdictionInfo);
+              }
               break;
             }
             if (sessionResult.needsWelcomeBack) {
-              await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdictionInfo.jurisdiction);
+              if (isBR) {
+                await this.handleWelcomeBackMessage(phone, sessionResult.session);
+              } else {
+                await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdictionInfo.jurisdiction);
+              }
             }
-            await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
+            if (isBR) {
+              await this.updateLastMessageSent(phone);
+            } else {
+              await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
+            }
             await this.handleCloudAudioByMediaId(phone, msg.media.mediaId, jurisdictionInfo.jurisdiction);
             break;
           }
@@ -400,18 +425,32 @@ export class WhatsAppService {
             const state = this.getConversationState(phone);
             const user = await this.usersService.getOrCreateUser(phone, jurisdictionInfo.jurisdiction);
             if (!user || !user.is_registered) {
-              await this.handleUnregisteredUser(phone, '', state, jurisdictionInfo, false);
+              await this.handleUnregisteredUser(phone, '', state, jurisdictionInfo, isBR);
               break;
             }
-            const sessionResult = await this.checkWhatsAppSession(phone, jurisdictionInfo.jurisdiction);
+            const sessionResult = isBR
+              ? await this.checkBrazilianUserSession(phone)
+              : await this.checkWhatsAppSession(phone, jurisdictionInfo.jurisdiction);
             if (!sessionResult.session) {
-              await this.handleWhatsAppUserWelcome(phone, '', state, jurisdictionInfo);
+              if (isBR) {
+                await this.handleBrazilianUserWelcome(phone, '', state);
+              } else {
+                await this.handleWhatsAppUserWelcome(phone, '', state, jurisdictionInfo);
+              }
               break;
             }
             if (sessionResult.needsWelcomeBack) {
-              await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdictionInfo.jurisdiction);
+              if (isBR) {
+                await this.handleWelcomeBackMessage(phone, sessionResult.session);
+              } else {
+                await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdictionInfo.jurisdiction);
+              }
             }
-            await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
+            if (isBR) {
+              await this.updateLastMessageSent(phone);
+            } else {
+              await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
+            }
             await this.handleCloudDocumentByMediaId(phone, msg.media.mediaId, jurisdictionInfo.jurisdiction);
             break;
           }
@@ -419,18 +458,32 @@ export class WhatsAppService {
             const state = this.getConversationState(phone);
             const user = await this.usersService.getOrCreateUser(phone, jurisdictionInfo.jurisdiction);
             if (!user || !user.is_registered) {
-              await this.handleUnregisteredUser(phone, '', state, jurisdictionInfo, false);
+              await this.handleUnregisteredUser(phone, '', state, jurisdictionInfo, isBR);
               break;
             }
-            const sessionResult = await this.checkWhatsAppSession(phone, jurisdictionInfo.jurisdiction);
+            const sessionResult = isBR
+              ? await this.checkBrazilianUserSession(phone)
+              : await this.checkWhatsAppSession(phone, jurisdictionInfo.jurisdiction);
             if (!sessionResult.session) {
-              await this.handleWhatsAppUserWelcome(phone, '', state, jurisdictionInfo);
+              if (isBR) {
+                await this.handleBrazilianUserWelcome(phone, '', state);
+              } else {
+                await this.handleWhatsAppUserWelcome(phone, '', state, jurisdictionInfo);
+              }
               break;
             }
             if (sessionResult.needsWelcomeBack) {
-              await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdictionInfo.jurisdiction);
+              if (isBR) {
+                await this.handleWelcomeBackMessage(phone, sessionResult.session);
+              } else {
+                await this.handleWhatsAppWelcomeBackMessage(phone, sessionResult.session, jurisdictionInfo.jurisdiction);
+              }
             }
-            await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
+            if (isBR) {
+              await this.updateLastMessageSent(phone);
+            } else {
+              await this.updateWhatsAppLastMessageSent(phone, jurisdictionInfo.jurisdiction);
+            }
             await this.handleCloudImageByMediaId(phone, msg.media.mediaId, jurisdictionInfo.jurisdiction);
             break;
           }
@@ -2360,9 +2413,10 @@ Estrutura:
   }
 
   async sendMessage(phone: string, message: string, typingDelay?: number): Promise<void> {
-    const flagEnabled = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
+    const flagEnabledIberia = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
+    const flagEnabledBR = String(this.configService.get('USE_CLOUD_API_BR') || '').toLowerCase() === 'true';
     const j = this.getRoutingJurisdiction(phone);
-    if (flagEnabled && (j === 'PT' || j === 'ES')) {
+    if ((flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
       await this.cloudClient.sendText(phone, message);
       return;
     }
@@ -2394,9 +2448,10 @@ Estrutura:
    * @param delay - Tempo em milissegundos para manter o status (padrão: 1200ms)
    */
   async sendTypingPresence(phone: string, delay: number = 1200): Promise<void> {
-    const flagEnabled = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
+    const flagEnabledIberia = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
+    const flagEnabledBR = String(this.configService.get('USE_CLOUD_API_BR') || '').toLowerCase() === 'true';
     const j = this.getRoutingJurisdiction(phone);
-    if (flagEnabled && (j === 'PT' || j === 'ES')) {
+    if ((flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
       // Cloud API não possui typing; fazemos no-op
       return;
     }

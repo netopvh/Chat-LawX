@@ -278,8 +278,10 @@ export class WhatsAppService {
 
   async handleCloudWebhook(payload: any): Promise<void> {
     try {
-      const flagEnabled = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
-      if (!flagEnabled) {
+      const flagEnabledIberia = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
+      const flagEnabledBR = String(this.configService.get('USE_CLOUD_API_BR') || '').toLowerCase() === 'true';
+      const cloudEnabled = flagEnabledIberia || flagEnabledBR;
+      if (!cloudEnabled) {
         this.logger.warn('Cloud API desabilitada por flag. Ignorando payload.');
         return;
       }

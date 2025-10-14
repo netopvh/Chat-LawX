@@ -47,7 +47,7 @@ export class HttpClientService {
 
   async post<T = any>(url: string, data?: any, config?: AxiosRequestConfig, retry?: Partial<RetryOptions>): Promise<T> {
     const r = { retries: 2, baseDelayMs: 300, maxDelayMs: 3000, ...(retry || {}) } as RetryOptions;
-    const finalConfig: AxiosRequestConfig = { timeout: 30000, ...(config || {}) };
+    const finalConfig: AxiosRequestConfig = { timeout: 120000, ...(config || {}) };
     return this.withRetry<T>(
       async () => {
         const res = await axios.post(url, data, finalConfig);
@@ -61,7 +61,7 @@ export class HttpClientService {
 
   async get<T = any>(url: string, config?: AxiosRequestConfig, retry?: Partial<RetryOptions>): Promise<{ data: T; headers: any }> {
     const r = { retries: 2, baseDelayMs: 300, maxDelayMs: 3000, ...(retry || {}) } as RetryOptions;
-    const finalConfig: AxiosRequestConfig = { timeout: 30000, responseType: 'arraybuffer', ...(config || {}) };
+    const finalConfig: AxiosRequestConfig = { timeout: 120000, responseType: 'arraybuffer', ...(config || {}) };
     return this.withRetry<{ data: T; headers: any }>(
       async () => {
         const res = await axios.get(url, finalConfig);

@@ -1518,12 +1518,7 @@ Mensagem: "${text.trim()}"`;
       );
       
       await this.sendMessage(phone, response);
-      if (jurisdiction.jurisdiction === 'BR') {
-        await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
-        if (user?.id) {
-          await this.usageService.incrementUsage(user.id, 'message', phone);
-        }
-      } else if (sessionId && response) {
+      if (jurisdiction.jurisdiction !== 'BR' && sessionId && response) {
         await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
       }
       
@@ -1674,9 +1669,7 @@ Mensagem: "${text.trim()}"`;
       user?.id
     );
 
-    if (jurisdiction.jurisdiction === 'BR' && analysis) {
-      await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: '[analysis]', role: 'assistant', json: analysis, conversationId: this.getConversationState(phone).conversationId });
-    } else if (sessionId && analysis) {
+    if (jurisdiction.jurisdiction !== 'BR' && sessionId && analysis) {
       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: '[analysis]', role: 'assistant', json: analysis, conversationId: this.getConversationState(phone).conversationId });
     }
 
@@ -1690,12 +1683,7 @@ Mensagem: "${text.trim()}"`;
       `⚠️ *Esta análise é informativa. Para casos específicos, consulte um advogado.*`;
 
     await this.sendMessage(phone, response);
-    if (jurisdiction.jurisdiction === 'BR') {
-      await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
-      if (user?.id) {
-        await this.usageService.incrementUsage(user.id, 'message', phone);
-      }
-    } else if (sessionId) {
+    if (jurisdiction.jurisdiction !== 'BR' && sessionId) {
       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
     }
 
@@ -1757,9 +1745,7 @@ Mensagem: "${text.trim()}"`;
 
     try {
       const jCode = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
-      if (jCode === 'BR') {
-        await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jCode, text: formattedAnalysis, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
-      } else {
+      if (jCode !== 'BR') {
         const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
         const sId = sessionCheck.session?.id;
         if (sId) {
@@ -1798,12 +1784,7 @@ Mensagem: "${text.trim()}"`;
     const j = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
     const response = await this.aiService.generateLegalResponse(transcribedText, phone, user?.id, undefined, jurisdiction);
     await this.sendMessage(phone, response);
-    if (j === 'BR') {
-      await this.messagingLogBr.logOutboundText({ phone, jurisdiction: j, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
-      if (user?.id) {
-        await this.usageService.incrementUsage(user.id, 'message', phone);
-      }
-    } else if (sessionId && response) {
+    if (j !== 'BR' && sessionId && response) {
       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: j, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
     }
   }
@@ -2509,9 +2490,19 @@ Estrutura:
     // Priorizar transporte Cloud se o inbound veio pela API Oficial
     if (state?.isCloudTransport === true || (flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
       await this.cloudClient.sendText(phone, message);
+      try {
+        if (j === 'BR') {
+          await this.messagingLogBr.logOutboundText({ phone, jurisdiction: 'BR', text: message });
+        }
+      } catch {}
       return;
     }
     await this.whatsappClient.sendText(phone, message, typingDelay);
+    try {
+      if (j === 'BR') {
+        await this.messagingLogBr.logOutboundText({ phone, jurisdiction: 'BR', text: message });
+      }
+    } catch {}
   }
 
   /**

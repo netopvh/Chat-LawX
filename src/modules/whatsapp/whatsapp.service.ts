@@ -2489,12 +2489,28 @@ Estrutura:
     const j = this.getRoutingJurisdiction(phone);
     // Priorizar transporte Cloud se o inbound veio pela API Oficial
     if (state?.isCloudTransport === true || (flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
-      await this.cloudClient.sendText(phone, message);
-      try {
-        if (j === 'BR') {
-          await this.messagingLogBr.logOutboundText({ phone, jurisdiction: 'BR', text: message });
+      // WhatsApp Cloud API: limite prático ~4096 chars no text.body
+      const maxLen = 4096;
+      const chunks: string[] = [];
+      if ((message || '').length > maxLen) {
+        let i = 0;
+        while (i < message.length) {
+          chunks.push(message.slice(i, i + maxLen));
+          i += maxLen;
         }
-      } catch {}
+      } else {
+        chunks.push(message);
+      }
+      for (const part of chunks) {
+        await this.cloudClient.sendText(phone, part);
+        try {
+          if (j === 'BR') {
+            await this.messagingLogBr.logOutboundText({ phone, jurisdiction: 'BR', text: part });
+          }
+        } catch {}
+        // Pequeno espaçamento para evitar throttling
+        if (chunks.length > 1) await new Promise(r => setTimeout(r, 100));
+      }
       return;
     }
     await this.whatsappClient.sendText(phone, message, typingDelay);

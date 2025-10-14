@@ -42,7 +42,9 @@ export class CloudWhatsAppClient implements IWhatsAppClient {
 
       this.logger.log(`Mensagem (Cloud) enviada para ${to}`);
     } catch (error) {
-      this.logger.error('Erro ao enviar mensagem (Cloud):', error);
+      const status = (error as any)?.response?.status;
+      const data = (error as any)?.response?.data;
+      this.logger.error(`Erro ao enviar mensagem (Cloud) - status: ${status} body: ${JSON.stringify(data)}`);
     }
   }
 

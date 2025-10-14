@@ -24,6 +24,7 @@ import { CloudMediaService } from './services/media/cloud-media.service';
 import { AudioProcessor } from './services/media/audio-processor';
 import { DocumentProcessor } from './services/media/document-processor';
 import { MessagingLogService } from './services/logging/messaging-log.service';
+import { MessagingLogSupabaseService } from './services/logging/messaging-log.supabase.service';
 import { ContextBuilderService } from './services/logging/context-builder.service';
 import { SessionService } from './services/session/session.service';
 import { UpgradeFlowEngine } from './services/upgrade/upgrade-flow.engine';
@@ -105,6 +106,7 @@ export class WhatsAppService {
     private sessionService: SessionService,
     private upgradeFlowEngine: UpgradeFlowEngine,
     private messagingLog: MessagingLogService,
+    private messagingLogBr: MessagingLogSupabaseService,
     private contextBuilder: ContextBuilderService,
   ) {
     // Inicializar números de teste a partir da env TEST_NUMBERS (comma-separated)
@@ -299,8 +301,12 @@ export class WhatsAppService {
             const prev = this.getConversationState(phone);
             this.setConversationState(phone, { ...prev, conversationId: convId });
             try {
-              // Backfill para mensagens recentes sem conversationId
-              await this.messagingLog.backfillConversationId({ phone, conversationId: convId, sinceMinutes: 180 });
+              // Evitar consultas à base local (Prisma) no fluxo BR
+              const j = this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
+              if (j !== 'BR') {
+                // Backfill para mensagens recentes sem conversationId (PT/ES apenas)
+                await this.messagingLog.backfillConversationId({ phone, conversationId: convId, sinceMinutes: 180 });
+              }
             } catch {}
           }
         }
@@ -1395,11 +1401,16 @@ Mensagem: "${text.trim()}"`;
 
       // 3. Log inbound texto
       try {
-        const check = await this.sessionService.checkWhatsAppSession(phone, (forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction));
-        const sessionId = check.session?.id;
         const jurisdiction = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
-        if (sessionId) {
-          await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction, text, conversationId: this.getConversationState(phone).conversationId });
+        const convId = this.getConversationState(phone).conversationId;
+        if (jurisdiction === 'BR') {
+          await this.messagingLogBr.logInboundText({ phone, jurisdiction, text, conversationId: convId || undefined });
+        } else {
+          const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction);
+          const sessionId = check.session?.id;
+          if (sessionId) {
+            await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction, text, conversationId: convId });
+          }
         }
       } catch {}
 
@@ -1450,16 +1461,25 @@ Mensagem: "${text.trim()}"`;
       const audioUrl = await this.audioProcessor.uploadAudio(normalizedBuffer, 'audio.mp3');
 
       // Log inbound media
-      const session = await this.sessionService.checkWhatsAppSession(phone, (forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction));
-      const sessionId = session.session?.id;
       const jurisdictionCode = forcedJurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
-      if (sessionId) {
-        await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl, conversationId: this.getConversationState(phone).conversationId });
+      let sessionId: string | undefined;
+      if (jurisdictionCode === 'BR') {
+        await this.messagingLogBr.logInboundMedia({ phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl, conversationId: this.getConversationState(phone).conversationId });
+      } else {
+        const session = await this.sessionService.checkWhatsAppSession(phone, jurisdictionCode);
+        sessionId = session.session?.id;
+        if (sessionId) {
+          await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl, conversationId: this.getConversationState(phone).conversationId });
+        }
       }
       
       // Processar áudio para consulta jurídica
       const transcribedText = await this.audioProcessor.transcribe(normalizedBuffer);
-      if (sessionId && transcribedText) {
+      if (jurisdictionCode === 'BR') {
+        if (transcribedText) {
+          await this.messagingLogBr.logInboundText({ phone, jurisdiction: jurisdictionCode, text: transcribedText, conversationId: this.getConversationState(phone).conversationId });
+        }
+      } else if (sessionId && transcribedText) {
         await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction: jurisdictionCode, text: transcribedText, conversationId: this.getConversationState(phone).conversationId });
       }
       
@@ -1478,7 +1498,9 @@ Mensagem: "${text.trim()}"`;
       );
       
       await this.sendMessage(phone, response);
-      if (sessionId && response) {
+      if (jurisdiction.jurisdiction === 'BR') {
+        await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+      } else if (sessionId && response) {
         await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
       }
       
@@ -1600,11 +1622,16 @@ Mensagem: "${text.trim()}"`;
   private async processImageBinary(imageBuffer: Buffer, ctx: { phone: string; user: User | null; jurisdiction?: string }): Promise<void> {
     const { phone, user } = ctx;
     // Log inbound media
-    const session = await this.sessionService.checkWhatsAppSession(phone, this.jurisdictionService.detectJurisdiction(phone).jurisdiction);
-    const sessionId = session.session?.id;
     const jurisdictionCode = this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
-    if (sessionId) {
-      await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'image', url: 'uploaded://image', conversationId: this.getConversationState(phone).conversationId });
+    let sessionId: string | undefined;
+    if (jurisdictionCode === 'BR') {
+      await this.messagingLogBr.logInboundMedia({ phone, jurisdiction: jurisdictionCode, messageType: 'image', url: 'uploaded://image', conversationId: this.getConversationState(phone).conversationId });
+    } else {
+      const session = await this.sessionService.checkWhatsAppSession(phone, jurisdictionCode);
+      sessionId = session.session?.id;
+      if (sessionId) {
+        await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'image', url: 'uploaded://image', conversationId: this.getConversationState(phone).conversationId });
+      }
     }
 
     // Mensagem inicial conforme jurisdição
@@ -1624,7 +1651,9 @@ Mensagem: "${text.trim()}"`;
       user?.id
     );
 
-    if (sessionId && analysis) {
+    if (jurisdiction.jurisdiction === 'BR' && analysis) {
+      await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: '[analysis]', role: 'assistant', json: analysis, conversationId: this.getConversationState(phone).conversationId });
+    } else if (sessionId && analysis) {
       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: '[analysis]', role: 'assistant', json: analysis, conversationId: this.getConversationState(phone).conversationId });
     }
 
@@ -1638,7 +1667,9 @@ Mensagem: "${text.trim()}"`;
       `⚠️ *Esta análise é informativa. Para casos específicos, consulte um advogado.*`;
 
     await this.sendMessage(phone, response);
-    if (sessionId) {
+    if (jurisdiction.jurisdiction === 'BR') {
+      await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+    } else if (sessionId) {
       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
     }
 
@@ -1683,10 +1714,14 @@ Mensagem: "${text.trim()}"`;
 
     try {
       const jCode = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
-      const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
-      const sId = sessionCheck.session?.id;
-      if (sId) {
-        await this.messagingLog.logInboundMedia({ sessionId: sId, phone, jurisdiction: jCode, messageType: 'document', url: fileUrl, conversationId: this.getConversationState(phone).conversationId });
+      if (jCode === 'BR') {
+        await this.messagingLogBr.logInboundMedia({ phone, jurisdiction: jCode, messageType: 'document', url: fileUrl, conversationId: this.getConversationState(phone).conversationId });
+      } else {
+        const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
+        const sId = sessionCheck.session?.id;
+        if (sId) {
+          await this.messagingLog.logInboundMedia({ sessionId: sId, phone, jurisdiction: jCode, messageType: 'document', url: fileUrl, conversationId: this.getConversationState(phone).conversationId });
+        }
       }
     } catch {}
 
@@ -1696,10 +1731,14 @@ Mensagem: "${text.trim()}"`;
 
     try {
       const jCode = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
-      const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
-      const sId = sessionCheck.session?.id;
-      if (sId) {
-        await this.messagingLog.logOutboundText({ sessionId: sId, phone, jurisdiction: jCode, text: formattedAnalysis, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+      if (jCode === 'BR') {
+        await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jCode, text: formattedAnalysis, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+      } else {
+        const sessionCheck = await this.sessionService.checkWhatsAppSession(phone, jCode);
+        const sId = sessionCheck.session?.id;
+        if (sId) {
+          await this.messagingLog.logOutboundText({ sessionId: sId, phone, jurisdiction: jCode, text: formattedAnalysis, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+        }
       }
     } catch {}
 
@@ -1714,20 +1753,23 @@ Mensagem: "${text.trim()}"`;
   private async processAudioBinary(mp3Buffer: Buffer, ctx: { phone: string; user: User | null; jurisdiction?: string }): Promise<void> {
     const { phone, user, jurisdiction } = ctx;
     const audioUrl = await this.audioProcessor.uploadAudio(mp3Buffer, 'audio.mp3');
-    const session = await this.sessionService.checkWhatsAppSession(phone, (jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction));
-    const sessionId = session.session?.id;
     const jurisdictionCode = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
-    if (sessionId) {
-      await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl, conversationId: this.getConversationState(phone).conversationId });
+    let sessionId: string | undefined;
+    if (jurisdictionCode !== 'BR') {
+      const session = await this.sessionService.checkWhatsAppSession(phone, jurisdictionCode);
+      sessionId = session.session?.id;
+      if (sessionId) {
+        await this.messagingLog.logInboundMedia({ sessionId, phone, jurisdiction: jurisdictionCode, messageType: 'audio', url: audioUrl, conversationId: this.getConversationState(phone).conversationId });
+      }
     }
     const transcribedText = await this.audioProcessor.transcribe(mp3Buffer);
-    if (sessionId && transcribedText) {
+    if (jurisdictionCode !== 'BR' && sessionId && transcribedText) {
       await this.messagingLog.logInboundText({ sessionId, phone, jurisdiction: jurisdictionCode, text: transcribedText, conversationId: this.getConversationState(phone).conversationId });
     }
     const j = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
     const response = await this.aiService.generateLegalResponse(transcribedText, phone, user?.id, undefined, jurisdiction);
     await this.sendMessage(phone, response);
-    if (sessionId && response) {
+    if (j !== 'BR' && sessionId && response) {
       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: j, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
     }
   }
@@ -1742,21 +1784,23 @@ Mensagem: "${text.trim()}"`;
       // Construir contexto curto (4+4) a partir do histórico persistido
       let finalText = text;
       try {
-        const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
-        const sessionId = check.session?.id;
-        if (sessionId) {
-          const ctx = await this.contextBuilder.buildConversationContext({
-            sessionId,
-            phone,
-            jurisdiction: jurisdiction.jurisdiction,
-            userLimit: 4,
-            assistantLimit: 4,
-          });
-          if (ctx && ctx.length > 0) {
-            const history = ctx
-              .map(m => `${m.role === 'user' ? 'Usuário' : 'Assistente'}: ${m.content}`)
-              .join('\n');
-            finalText = `HISTÓRICO (últimas trocas):\n${history}\n\nNOVA MENSAGEM DO USUÁRIO:\n${text}`;
+        if (jurisdiction.jurisdiction !== 'BR') {
+          const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
+          const sessionId = check.session?.id;
+          if (sessionId) {
+            const ctx = await this.contextBuilder.buildConversationContext({
+              sessionId,
+              phone,
+              jurisdiction: jurisdiction.jurisdiction,
+              userLimit: 4,
+              assistantLimit: 4,
+            });
+            if (ctx && ctx.length > 0) {
+              const history = ctx
+                .map(m => `${m.role === 'user' ? 'Usuário' : 'Assistente'}: ${m.content}`)
+                .join('\n');
+              finalText = `HISTÓRICO (últimas trocas):\n${history}\n\nNOVA MENSAGEM DO USUÁRIO:\n${text}`;
+            }
           }
         }
       } catch {}
@@ -1772,10 +1816,15 @@ Mensagem: "${text.trim()}"`;
       
       await this.sendMessageWithTyping(phone, response, 2000);
       try {
-        const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
-        const sessionId = check.session?.id;
-        if (sessionId && response) {
-          await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+        const convId = this.getConversationState(phone).conversationId;
+        if (jurisdiction.jurisdiction === 'BR') {
+          await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: convId });
+        } else {
+          const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
+          const sessionId = check.session?.id;
+          if (sessionId && response) {
+            await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: convId });
+          }
         }
       } catch {}
       

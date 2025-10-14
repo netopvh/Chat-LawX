@@ -33,6 +33,7 @@ import { SessionService } from './services/session/session.service';
 import { UpgradeFlowEngine } from './services/upgrade/upgrade-flow.engine';
 import { HttpClientService } from './services/clients/http.client';
 import { MessagingLogService } from './services/logging/messaging-log.service';
+import { MessagingLogSupabaseService } from './services/logging/messaging-log.supabase.service';
 import { ContextBuilderService } from './services/logging/context-builder.service';
 
 @Module({
@@ -71,6 +72,7 @@ import { ContextBuilderService } from './services/logging/context-builder.servic
     UpgradeFlowEngine,
     HttpClientService,
     MessagingLogService,
+    MessagingLogSupabaseService,
     ContextBuilderService,
     WebhookSecurityService,
   ],

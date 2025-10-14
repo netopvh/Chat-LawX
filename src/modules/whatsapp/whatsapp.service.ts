@@ -1500,6 +1500,9 @@ Mensagem: "${text.trim()}"`;
       await this.sendMessage(phone, response);
       if (jurisdiction.jurisdiction === 'BR') {
         await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+        if (user?.id) {
+          await this.usageService.incrementUsage(user.id, 'message', phone);
+        }
       } else if (sessionId && response) {
         await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
       }
@@ -1669,6 +1672,9 @@ Mensagem: "${text.trim()}"`;
     await this.sendMessage(phone, response);
     if (jurisdiction.jurisdiction === 'BR') {
       await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+      if (user?.id) {
+        await this.usageService.incrementUsage(user.id, 'message', phone);
+      }
     } else if (sessionId) {
       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
     }
@@ -1748,6 +1754,9 @@ Mensagem: "${text.trim()}"`;
 
     const anotherDocMsg = this.getLocalizedMessage('analyze_another_document', jurisdiction);
     await this.sendMessageWithTyping(phone, anotherDocMsg, 1000);
+    if (user?.id && (jurisdiction === 'BR')) {
+      await this.usageService.incrementUsage(user.id, 'message', phone);
+    }
   }
 
   private async processAudioBinary(mp3Buffer: Buffer, ctx: { phone: string; user: User | null; jurisdiction?: string }): Promise<void> {
@@ -1769,7 +1778,12 @@ Mensagem: "${text.trim()}"`;
     const j = jurisdiction || this.jurisdictionService.detectJurisdiction(phone).jurisdiction;
     const response = await this.aiService.generateLegalResponse(transcribedText, phone, user?.id, undefined, jurisdiction);
     await this.sendMessage(phone, response);
-    if (j !== 'BR' && sessionId && response) {
+    if (j === 'BR') {
+      await this.messagingLogBr.logOutboundText({ phone, jurisdiction: j, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
+      if (user?.id) {
+        await this.usageService.incrementUsage(user.id, 'message', phone);
+      }
+    } else if (sessionId && response) {
       await this.messagingLog.logOutboundText({ sessionId, phone, jurisdiction: j, text: response, role: 'assistant', conversationId: this.getConversationState(phone).conversationId });
     }
   }
@@ -1819,6 +1833,9 @@ Mensagem: "${text.trim()}"`;
         const convId = this.getConversationState(phone).conversationId;
         if (jurisdiction.jurisdiction === 'BR') {
           await this.messagingLogBr.logOutboundText({ phone, jurisdiction: jurisdiction.jurisdiction, text: response, role: 'assistant', conversationId: convId });
+          if (user?.id) {
+            await this.usageService.incrementUsage(user.id, 'message', phone);
+          }
         } else {
           const check = await this.sessionService.checkWhatsAppSession(phone, jurisdiction.jurisdiction);
           const sessionId = check.session?.id;

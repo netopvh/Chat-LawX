@@ -50,6 +50,8 @@ interface ConversationState {
   pendingName?: string;
   pendingEmail?: string;
   conversationId?: string;
+  // Marca se o inbound atual veio via API Oficial (Cloud) para roteamento do transporte
+  isCloudTransport?: boolean;
 }
 
 @Injectable()
@@ -322,6 +324,8 @@ export class WhatsAppService {
           jurisdiction: jurisdictionInfo.jurisdiction,
           ddi: jurisdictionInfo.ddi,
           conversationId: this.getConversationState(phone).conversationId,
+          // Marcar transporte Cloud para forçar respostas pela API Oficial
+          isCloudTransport: true,
         });
 
         // Alinhar comportamento: se está em análise (ES/PT), seguir as mesmas regras do processSpanishMessage/processPortugueseMessage
@@ -2417,8 +2421,10 @@ Estrutura:
   async sendMessage(phone: string, message: string, typingDelay?: number): Promise<void> {
     const flagEnabledIberia = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
     const flagEnabledBR = String(this.configService.get('USE_CLOUD_API_BR') || '').toLowerCase() === 'true';
+    const state = this.getConversationState(phone);
     const j = this.getRoutingJurisdiction(phone);
-    if ((flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
+    // Priorizar transporte Cloud se o inbound veio pela API Oficial
+    if (state?.isCloudTransport === true || (flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
       await this.cloudClient.sendText(phone, message);
       return;
     }
@@ -2452,8 +2458,9 @@ Estrutura:
   async sendTypingPresence(phone: string, delay: number = 1200): Promise<void> {
     const flagEnabledIberia = String(this.configService.get('USE_CLOUD_API_PT_ES') || '').toLowerCase() === 'true';
     const flagEnabledBR = String(this.configService.get('USE_CLOUD_API_BR') || '').toLowerCase() === 'true';
+    const state = this.getConversationState(phone);
     const j = this.getRoutingJurisdiction(phone);
-    if ((flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
+    if (state?.isCloudTransport === true || (flagEnabledIberia && (j === 'PT' || j === 'ES')) || (flagEnabledBR && j === 'BR')) {
       // Cloud API não possui typing; fazemos no-op
       return;
     }

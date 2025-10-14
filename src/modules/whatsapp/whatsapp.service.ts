@@ -1353,20 +1353,20 @@ Mensagem: "${text.trim()}"`;
       const isBrazil = jurisdictionInfo.jurisdiction === 'BR';
 
       // 0.2 BR: Se a mensagem indicar upgrade/assinatura, responder com link estático e NÃO iniciar fluxo
-      if (isBrazil) {
-        const lower = text.toLowerCase();
-        const upgradeKeywordsBR = [
-          'upgrade', 'assinar', 'assinatura', 'plano', 'pago', 'premium', 'pro', 'mensal', 'anual',
-          'trocar plano', 'mudar plano', 'quero plano', 'quero assinar', 'quero o pro', 'quero o premium',
-          'comprar', 'preço', 'pagamento'
-        ];
-        if (upgradeKeywordsBR.some(k => lower.includes(k))) {
-          const response = '🚀 Para fazer upgrade do seu plano, acesse: https://plataforma.lawx.ai/\n\n' +
-            'Lá você encontrará os planos disponíveis e poderá concluir o upgrade com segurança.';
-          await this.sendMessage(phone, response);
-          return;
-        }
-      }
+      // if (isBrazil) {
+      //   const lower = text.toLowerCase();
+      //   const upgradeKeywordsBR = [
+      //     'upgrade', 'assinar', 'assinatura', 'plano', 'pago', 'premium', 'pro', 'mensal', 'anual',
+      //     'trocar plano', 'mudar plano', 'quero plano', 'quero assinar', 'quero o pro', 'quero o premium',
+      //     'comprar', 'preço', 'pagamento'
+      //   ];
+      //   if (upgradeKeywordsBR.some(k => lower.includes(k))) {
+      //     const response = '🚀 Para fazer upgrade do seu plano, acesse: https://plataforma.lawx.ai/\n\n' +
+      //       'Lá você encontrará os planos disponíveis e poderá concluir o upgrade com segurança.';
+      //     await this.sendMessage(phone, response);
+      //     return;
+      //   }
+      // }
 
       // 1. Verificar se há sessão de upgrade ativa ou estado de upgrade (apenas PT/ES)
       // if (user && !isBrazil) {
